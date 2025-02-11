@@ -1,5 +1,8 @@
 use thiserror::Error;
 
+mod freelist;
+pub use freelist::*;
+
 pub type Index = nonmax::NonMaxU32;
 
 #[derive(Debug, Error)]
