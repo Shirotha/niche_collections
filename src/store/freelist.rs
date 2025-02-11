@@ -13,6 +13,22 @@ pub struct FreelistStore<T> {
     data: Vec<Entry<T>>,
     head: Option<Index>,
 }
+impl<T> FreelistStore<T> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_capacity(capacity: usize) -> Self {
+        if capacity > Index::MAX.get() as usize {
+            panic!("capacity exceeds largest possible index!")
+        }
+        Self { data: Vec::with_capacity(capacity), head: None }
+    }
+}
+impl<T> Default for FreelistStore<T> {
+    fn default() -> Self {
+        Self { data: Vec::new(), head: None }
+    }
+}
 impl<T> Store<T> for FreelistStore<T> {
     fn get(&self, index: Index) -> Result<&T, StoreError> {
         let entry = self
