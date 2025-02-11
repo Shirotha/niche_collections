@@ -2,7 +2,7 @@ use std::mem::replace;
 
 use super::*;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum Entry<T> {
     Occupied(T),
     Free(Option<Index>),
@@ -52,23 +52,23 @@ impl<T> Store<T> for FreelistStore<T> {
         }
     }
 
-    fn try_insert(&mut self, data: T) -> Result<Option<Index>, StoreError> {
+    fn try_insert(&mut self, data: T) -> Option<Index> {
         if let Some(index) = self.head.take() {
             let old = replace(&mut self.data[index.get() as usize], Entry::Occupied(data));
             let Entry::Free(new_head) = old else {
                 unreachable!("freelist head should always point to a free Entry")
             };
             self.head = new_head;
-            Ok(Some(index))
+            Some(index)
         } else {
             let len = self.data.len();
             // HACK: https://github.com/rust-lang/rust/issues/100486
             if len == self.data.capacity() {
-                return Ok(None);
+                return None;
             }
             let index = Index::new(len as u32).expect("index is in capacity and should be valid");
             self.data.push(Entry::Occupied(data));
-            Ok(Some(index))
+            Some(index)
         }
     }
 
@@ -96,5 +96,35 @@ impl<T> Store<T> for FreelistStore<T> {
             },
             Entry::Free(_) => Err(StoreError::DoubleFree(index)),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn can_insert_without_alloc() {
+        let mut store = FreelistStore::with_capacity(1);
+        let index = store.try_insert(42).expect("store with capacity should not have to allocate");
+        assert_eq!(0, index.get(), "insert under capacity will append");
+        assert_eq!(Ok(&42), store.get(index), "stored value should not change");
+    }
+
+    #[test]
+    fn can_expand_capacity() {
+        let mut store = FreelistStore::new();
+        assert_eq!(None, store.try_insert(42));
+        assert_eq!(Ok(()), store.reserve(1));
+    }
+
+    #[test]
+    fn can_reuse_slot() {
+        let mut store = FreelistStore::with_capacity(1);
+        let index = store.try_insert(42).expect("store with capacity should not have to allocate");
+        assert_eq!(Ok(42), store.delete(index), "delete should return original value");
+        let index2 =
+            store.try_insert(42).expect("freed space should be reused without allocation needed");
+        assert_eq!(index, index2, "index should be reused");
     }
 }

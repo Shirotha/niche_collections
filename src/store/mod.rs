@@ -8,7 +8,7 @@ pub use intervaltree::*;
 
 pub type Index = nonmax::NonMaxU32;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum StoreError {
     #[error("Tried to access data at index {0} when length was {1}.")]
     OutOfBounds(Index, usize),
@@ -24,7 +24,7 @@ pub enum StoreError {
 pub trait Store<T> {
     fn get(&self, index: Index) -> Result<&T, StoreError>;
     fn get_mut(&mut self, index: Index) -> Result<&mut T, StoreError>;
-    fn try_insert(&mut self, data: T) -> Result<Option<Index>, StoreError>;
+    fn try_insert(&mut self, data: T) -> Option<Index>;
     fn reserve(&mut self, count: usize) -> Result<(), StoreError>;
     fn delete(&mut self, index: Index) -> Result<T, StoreError>;
 }
@@ -35,7 +35,7 @@ const ONE: Index = unsafe { Index::new_unchecked(1) };
 pub trait MultiStore<T>: Store<T> {
     fn get_many(&self, index: Index, len: Index) -> Result<&[T], StoreError>;
     fn get_many_mut(&mut self, index: Index, len: Index) -> Result<&mut [T], StoreError>;
-    fn try_insert_many(&mut self, data: &[T]) -> Result<Option<Index>, StoreError>;
+    fn try_insert_many(&mut self, data: &[T]) -> Option<Index>;
     // TODO: should this really allocate on heap?!?
     fn delete_many(&mut self, index: Index, len: Index) -> Result<Box<[T]>, StoreError>;
 
@@ -47,7 +47,7 @@ pub trait MultiStore<T>: Store<T> {
         self.get_many_mut(index, ONE).map(|xs| &mut xs[0])
     }
 
-    fn try_insert(&mut self, data: T) -> Result<Option<Index>, StoreError> {
+    fn try_insert(&mut self, data: T) -> Option<Index> {
         self.try_insert_many(&[data])
     }
 
