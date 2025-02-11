@@ -3,6 +3,9 @@ use thiserror::Error;
 mod freelist;
 pub use freelist::*;
 
+mod intervaltree;
+pub use intervaltree::*;
+
 pub type Index = nonmax::NonMaxU32;
 
 #[derive(Debug, Error)]
