@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/*",
+]
+
+[workspace.package]
+authors = ["Shirotha"]
+version = "0.1.0"
+edition = "2021"
+
+
+[package]
+name = "handling-arena"
+authors.workspace = true
+description = "arena allocator that uses typed handles instead of indices"
+repository = "https://github.com/Shirotha/handling-arena"
+version.workspace = true
+edition.workspace = true
+
+[features]
+serde = ["dep:serde", "parking_lot/serde", "nonmax/serde"]
+hardware-lock-elision = ["parking_lot/hardware-lock-elision"]
+
+[dependencies]
+generativity = "1.1.0"
+nonmax = "0.5.5"
+parking_lot = "0.12.3"
+
+serde = { version = "1.0", features = ["derive"], optional = true }
+thiserror = "2.0.11"

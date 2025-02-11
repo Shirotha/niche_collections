@@ -1,0 +1,76 @@
+[alias]
+debug = "build --profile debugger"
+Build = "build --release"
+B = "Build"
+Run = "run --release"
+R = "Run"
+Test = "test --profile debugger"
+T = "Test"
+bcompact = "build --profile release-compact"
+bc = "bcompact"
+BCompact = "build --profile release-very-compact"
+BC = "BCompact"
+rcompact = "run --profile release-compact"
+rc = "rcompact"
+RCompact = "run --profile release-very-compact"
+RC = "RCompact"
+
+
+
+[build]
+rustflags = [
+  "-C", "symbol-mangling-version=v0",
+  "-C", "target-cpu=native",
+]
+
+
+[profile.release]
+opt-level = 3
+incremental = false
+codegen-units = 1
+lto = "fat"
+debug = false
+panic = "abort"
+strip = "debuginfo"
+
+[profile.release.package."*"]
+opt-level = 3
+
+[profile.release-compact]
+inherits = "release"
+opt-level = "s"
+
+[profile.release-very-compact]
+inherits = "release"
+opt-level = "z"
+
+
+[profile.dev]
+opt-level = 1
+incremental = true
+codegen-units = 256
+lto = false
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+
+[profile.bench]
+codegen-units = 256
+
+
+[profile.debugger]
+inherits = "dev"
+opt-level = 0
+debug = 2
+
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = [
+  "-C", "link-arg=-fuse-ld=mold",
+]
