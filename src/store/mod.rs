@@ -27,7 +27,7 @@ pub trait Store<T> {
     fn get(&self, index: Index) -> Result<&T, StoreError>;
     fn get_mut(&mut self, index: Index) -> Result<&mut T, StoreError>;
     fn insert_within_capacity(&mut self, data: T) -> Result<Index, T>;
-    fn reserve(&mut self, count: usize) -> Result<(), StoreError>;
+    fn reserve(&mut self, additional: usize) -> Result<(), StoreError>;
     fn delete(&mut self, index: Index) -> Result<T, StoreError>;
     fn clear(&mut self);
 }

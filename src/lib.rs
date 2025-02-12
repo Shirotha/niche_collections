@@ -92,5 +92,11 @@
 //     - alternative to Arena but concurrent
 //     - can be locking to individual Port (concurrent write)
 
+// NOTE: remove this later
+#![allow(dead_code)]
+
 mod store;
 use store::*;
+
+mod manager;
+use manager::*;
