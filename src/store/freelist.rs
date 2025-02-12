@@ -73,7 +73,7 @@ impl<T> Store<T> for FreelistStore<T> {
     }
 
     fn reserve(&mut self, additional: usize) -> Result<(), StoreError> {
-        if self.data.len() + additional > Index::MAX.get() as usize {
+        if self.data.len() + additional >= Index::MAX.get() as usize {
             return Err(StoreError::OutofMemory(additional, self.data.len()));
         }
         self.data.reserve(additional);
