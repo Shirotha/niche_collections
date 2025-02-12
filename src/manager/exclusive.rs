@@ -1,9 +1,7 @@
-use std::marker::PhantomData;
-
+use crate::*;
 use generativity::{Guard, Id};
 use manager::ManagerError;
-
-use crate::*;
+use std::marker::PhantomData;
 
 #[derive(Debug)]
 struct ExclusiveHandle<'man, T: ?Sized> {
@@ -19,7 +17,8 @@ struct ExclusiveManager<'id, T, S: Store<T>> {
     id: Id<'id>,
     _marker: PhantomData<T>,
 }
-impl<'id, T, S> ExclusiveManager<'id, T, S>
+type XManager<'id, T, S> = ExclusiveManager<'id, T, S>;
+impl<'id, T, S> XManager<'id, T, S>
 where
     S: Store<T> + Default,
 {
@@ -27,8 +26,7 @@ where
         Self { store: S::default(), id: guard.into(), _marker: PhantomData }
     }
 }
-type XManager<'id, T, S> = ExclusiveManager<'id, T, S>;
-impl<'id, T, S: Store<T>> ExclusiveManager<'id, T, S> {
+impl<'id, T, S: Store<T>> XManager<'id, T, S> {
     pub fn get(&self, handle: &XHandle<'id, T>) -> Result<&T, ManagerError> {
         self.store.get(handle.index).map_err(ManagerError::from)
     }
@@ -55,7 +53,7 @@ impl<'id, T, S: Store<T>> ExclusiveManager<'id, T, S> {
         self.store.clear();
     }
 }
-impl<'id, T: Clone, S: MultiStore<T>> ExclusiveManager<'id, T, S> {
+impl<'id, T: Clone, S: MultiStore<T>> XManager<'id, T, S> {
     // TODO: methods for slice access
     // TODO: methods for mixed type access
 }

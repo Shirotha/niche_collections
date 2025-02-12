@@ -1,6 +1,5 @@
-use std::mem::replace;
-
 use super::*;
+use std::mem::replace;
 
 #[derive(Debug, PartialEq, Eq)]
 enum Entry<T> {

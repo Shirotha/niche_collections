@@ -1,5 +1,4 @@
 use std::ops::Deref;
-
 use thiserror::Error;
 
 mod simple;
