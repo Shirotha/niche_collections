@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use thiserror::Error;
 
 mod freelist;
@@ -24,20 +26,45 @@ pub enum StoreError {
 pub trait Store<T> {
     fn get(&self, index: Index) -> Result<&T, StoreError>;
     fn get_mut(&mut self, index: Index) -> Result<&mut T, StoreError>;
-    fn try_insert(&mut self, data: T) -> Option<Index>;
+    fn insert_within_capacity(&mut self, data: T) -> Result<Index, T>;
     fn reserve(&mut self, count: usize) -> Result<(), StoreError>;
     fn delete(&mut self, index: Index) -> Result<T, StoreError>;
+    fn clear(&mut self);
 }
 
 // SAFETY: 1 is always a valid index
 const ONE: Index = unsafe { Index::new_unchecked(1) };
 
-pub trait MultiStore<T>: Store<T> {
+#[derive(Debug)]
+pub struct BeforeDeleteMany<'a, T, F: FnOnce()> {
+    data: &'a [T],
+    commit_delete: Option<F>,
+}
+impl<T, F: FnOnce()> Deref for BeforeDeleteMany<'_, T, F> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        self.data
+    }
+}
+impl<T, F: FnOnce()> Drop for BeforeDeleteMany<'_, T, F> {
+    fn drop(&mut self) {
+        self.commit_delete.take().into_iter().for_each(|f| f());
+    }
+}
+
+// TODO: is Clone here really needed?
+pub trait MultiStore<T: Clone>: Store<T> {
+    type DeleteHandler: FnOnce();
+
     fn get_many(&self, index: Index, len: Index) -> Result<&[T], StoreError>;
     fn get_many_mut(&mut self, index: Index, len: Index) -> Result<&mut [T], StoreError>;
-    fn try_insert_many(&mut self, data: &[T]) -> Option<Index>;
-    // TODO: should this really allocate on heap?!?
-    fn delete_many(&mut self, index: Index, len: Index) -> Result<Box<[T]>, StoreError>;
+    fn insert_many_within_capacity(&mut self, data: &[T]) -> Option<Index>;
+    fn delete_many(
+        &mut self,
+        index: Index,
+        len: Index,
+    ) -> Result<BeforeDeleteMany<'_, T, Self::DeleteHandler>, StoreError>;
 
     fn get(&self, index: Index) -> Result<&T, StoreError> {
         self.get_many(index, ONE).map(|xs| &xs[0])
@@ -47,11 +74,11 @@ pub trait MultiStore<T>: Store<T> {
         self.get_many_mut(index, ONE).map(|xs| &mut xs[0])
     }
 
-    fn try_insert(&mut self, data: T) -> Option<Index> {
-        self.try_insert_many(&[data])
+    fn insert_within_capacity(&mut self, data: T) -> Result<Index, T> {
+        self.insert_many_within_capacity(&[data.clone()]).ok_or(data)
     }
 
     fn delete(&mut self, index: Index) -> Result<T, StoreError> {
-        todo!("how to move out of single length boxed slice")
+        self.delete_many(index, ONE).map(|guard| guard[0].clone())
     }
 }
