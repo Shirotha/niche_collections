@@ -4,20 +4,20 @@ use manager::ManagerError;
 use std::marker::PhantomData;
 
 #[derive(Debug)]
-struct ExclusiveHandle<'man, T: ?Sized> {
+pub struct ExclusiveHandle<'man, T: ?Sized> {
     index: Index,
     manager: Id<'man>,
     _marker: PhantomData<fn() -> T>,
 }
-type XHandle<'man, T> = ExclusiveHandle<'man, T>;
+pub type XHandle<'man, T> = ExclusiveHandle<'man, T>;
 
 #[derive(Debug)]
-struct ExclusiveManager<'id, T, S> {
+pub struct ExclusiveManager<'id, T, S> {
     store: S,
     id: Id<'id>,
     _marker: PhantomData<T>,
 }
-type XManager<'id, T, S> = ExclusiveManager<'id, T, S>;
+pub type XManager<'id, T, S> = ExclusiveManager<'id, T, S>;
 impl<'id, T, S> XManager<'id, T, S>
 where
     S: Default,
@@ -47,7 +47,7 @@ impl<'id, T, S: Store<T>> XManager<'id, T, S> {
         self.store.clear();
     }
 }
-impl<'id, T: Clone, S: ReusableStore<T>> XManager<'id, T, S> {
+impl<'id, T, S: ReusableStore<T>> XManager<'id, T, S> {
     pub fn remove(
         &mut self,
         handle: XHandle<'id, T>,

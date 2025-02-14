@@ -6,22 +6,22 @@ use std::{marker::PhantomData, num::Wrapping};
 pub type Version = u32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct VersionHandle<'man, T> {
+pub struct VersionHandle<'man, T> {
     index: Index,
     version: Version,
     manager: Id<'man>,
     _marker: PhantomData<fn() -> T>,
 }
-type VHandle<'man, T> = VersionHandle<'man, T>;
+pub type VHandle<'man, T> = VersionHandle<'man, T>;
 
-struct VersionManager<'id, T, S> {
+pub struct VersionManager<'id, T, S> {
     store: S,
     version: Wrapping<Version>,
     dirty: bool,
     id: Id<'id>,
     _marker: PhantomData<T>,
 }
-type VManager<'id, T, S> = VersionManager<'id, T, S>;
+pub type VManager<'id, T, S> = VersionManager<'id, T, S>;
 impl<'id, T, S> VManager<'id, T, S>
 where
     S: Default,

@@ -100,3 +100,6 @@ use store::*;
 
 mod manager;
 use manager::*;
+
+mod arena;
+use arena::*;
