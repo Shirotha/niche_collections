@@ -1,6 +1,9 @@
 mod exclusive;
 pub use exclusive::*;
 
+mod version;
+pub use version::*;
+
 use crate::ManagerError;
 use thiserror::Error;
 
