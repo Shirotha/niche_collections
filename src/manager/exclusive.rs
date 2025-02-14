@@ -12,7 +12,7 @@ struct ExclusiveHandle<'man, T: ?Sized> {
 type XHandle<'man, T> = ExclusiveHandle<'man, T>;
 
 #[derive(Debug)]
-struct ExclusiveManager<'id, T, S: Store<T>> {
+struct ExclusiveManager<'id, T, S> {
     store: S,
     id: Id<'id>,
     _marker: PhantomData<T>,
@@ -20,7 +20,7 @@ struct ExclusiveManager<'id, T, S: Store<T>> {
 type XManager<'id, T, S> = ExclusiveManager<'id, T, S>;
 impl<'id, T, S> XManager<'id, T, S>
 where
-    S: Store<T> + Default,
+    S: Default,
 {
     pub fn new(guard: Guard<'id>) -> Self {
         Self { store: S::default(), id: guard.into(), _marker: PhantomData }
@@ -43,14 +43,16 @@ impl<'id, T, S: Store<T>> XManager<'id, T, S> {
     pub fn reserve(&mut self, additional: usize) -> Result<(), ManagerError> {
         self.store.reserve(additional).map_err(ManagerError::from)
     }
-    pub fn delete(
+    pub fn clear(&mut self) {
+        self.store.clear();
+    }
+}
+impl<'id, T: Clone, S: ReusableStore<T>> XManager<'id, T, S> {
+    pub fn remove(
         &mut self,
         handle: XHandle<'id, T>,
     ) -> Result<T, (XHandle<'id, T>, ManagerError)> {
-        self.store.delete(handle.index).map_err(|err| (handle, err.into()))
-    }
-    pub fn clear(&mut self) {
-        self.store.clear();
+        self.store.remove(handle.index).map_err(|err| (handle, err.into()))
     }
 }
 impl<'id, T: Clone, S: MultiStore<T>> XManager<'id, T, S> {
@@ -85,6 +87,6 @@ mod test {
             .insert_within_capacity(42)
             .expect("insert with spare capacity should be successful");
         assert_eq!(Ok(&42), manager.get(&handle));
-        assert!(matches!(manager.delete(handle), Ok(42)));
+        assert!(matches!(manager.remove(handle), Ok(42)));
     }
 }

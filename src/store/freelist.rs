@@ -79,7 +79,14 @@ impl<T> Store<T> for FreelistStore<T> {
         Ok(())
     }
 
-    fn delete(&mut self, index: Index) -> Result<T, StoreError> {
+    fn clear(&mut self) {
+        self.data.clear();
+        self.head = None;
+    }
+}
+
+impl<T> ReusableStore<T> for FreelistStore<T> {
+    fn remove(&mut self, index: Index) -> Result<T, StoreError> {
         // HACK: circumvent borrowchecker false positive
         let len = self.data.len();
         let entry =
@@ -95,11 +102,6 @@ impl<T> Store<T> for FreelistStore<T> {
             },
             Entry::Free(_) => Err(StoreError::DoubleFree(index)),
         }
-    }
-
-    fn clear(&mut self) {
-        self.data.clear();
-        self.head = None;
     }
 }
 
@@ -130,7 +132,7 @@ mod test {
         let index = store
             .insert_within_capacity(42)
             .expect("store with capacity should not have to allocate");
-        assert_eq!(Ok(42), store.delete(index), "delete should return original value");
+        assert_eq!(Ok(42), store.remove(index), "remove should return original value");
         let index2 = store
             .insert_within_capacity(42)
             .expect("freed space should be reused without allocation needed");

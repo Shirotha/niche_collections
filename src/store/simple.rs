@@ -49,11 +49,6 @@ impl<T> Store<T> for SimpleStore<T> {
         Ok(())
     }
 
-    #[expect(unused_variables)]
-    fn delete(&mut self, index: Index) -> Result<T, StoreError> {
-        panic!("unsupported, use clear instead")
-    }
-
     fn clear(&mut self) {
         self.data.clear();
     }
@@ -86,16 +81,5 @@ impl<T: Clone> MultiStore<T> for SimpleStore<T> {
             Index::new(self.data.len() as u32).expect("index is in capacity and should be valid");
         self.data.extend_from_slice(data);
         Some(index)
-    }
-
-    #[expect(unreachable_code, unused_variables)]
-    fn delete_many(
-        &mut self,
-        index: Index,
-        len: Index,
-    ) -> Result<BeforeDeleteMany<'_, T, impl FnOnce()>, StoreError> {
-        panic!("unsupported, use clear instead");
-        // NOTE: needed to prevent explicit type annotations
-        Ok(BeforeDeleteMany { data: self.get_many(index, len)?, commit_delete: Some(|| ()) })
     }
 }

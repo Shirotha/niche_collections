@@ -14,7 +14,7 @@ struct VersionHandle<'man, T> {
 }
 type VHandle<'man, T> = VersionHandle<'man, T>;
 
-struct VersionManager<'id, T, S: Store<(Version, T)>> {
+struct VersionManager<'id, T, S> {
     store: S,
     version: Wrapping<Version>,
     dirty: bool,
@@ -24,7 +24,7 @@ struct VersionManager<'id, T, S: Store<(Version, T)>> {
 type VManager<'id, T, S> = VersionManager<'id, T, S>;
 impl<'id, T, S> VManager<'id, T, S>
 where
-    S: Default + Store<(Version, T)>,
+    S: Default,
 {
     pub fn new(guard: Guard<'id>) -> Self {
         Self {
@@ -68,17 +68,19 @@ impl<'id, T, S: Store<(Version, T)>> VManager<'id, T, S> {
     pub fn reserve(&mut self, additional: usize) -> Result<(), ManagerError> {
         self.store.reserve(additional).map_err(ManagerError::from)
     }
-    pub fn delete(&mut self, handle: VHandle<'id, T>) -> Result<T, ManagerError> {
-        if self.store.get(handle.index).map_err(ManagerError::from)?.0 != handle.version {
-            return Err(ManagerError::BadHandle("version mismatch"));
-        }
-        let deleted = self.store.delete(handle.index).map_err(ManagerError::from)?;
-        self.dirty = true;
-        Ok(deleted.1)
-    }
     pub fn clear(&mut self) {
         self.dirty = true;
         self.store.clear();
+    }
+}
+impl<'id, T, S: ReusableStore<(Version, T)>> VManager<'id, T, S> {
+    pub fn remove(&mut self, handle: VHandle<'id, T>) -> Result<T, ManagerError> {
+        if self.store.get(handle.index).map_err(ManagerError::from)?.0 != handle.version {
+            return Err(ManagerError::BadHandle("version mismatch"));
+        }
+        let removed = self.store.remove(handle.index).map_err(ManagerError::from)?;
+        self.dirty = true;
+        Ok(removed.1)
     }
 }
 // TODO: MultiStore impl
