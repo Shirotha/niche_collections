@@ -1,9 +1,11 @@
 use crate::*;
 use generativity::{Guard, Id};
 use manager::ManagerError;
-use std::{marker::PhantomData, num::Wrapping};
+use std::{marker::PhantomData, num::NonZeroU32};
 
-pub type Version = u32;
+pub type Version = NonZeroU32;
+// SAFETY: 1 is not zero
+const VERSION1: Version = unsafe { Version::new_unchecked(1) };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VersionHandle<'man, T> {
@@ -16,7 +18,7 @@ pub type VHandle<'man, T> = VersionHandle<'man, T>;
 
 pub struct VersionManager<'id, T, S> {
     store: S,
-    version: Wrapping<Version>,
+    version: Version,
     dirty: bool,
     id: Id<'id>,
     _marker: PhantomData<T>,
@@ -29,7 +31,7 @@ where
     pub fn new(guard: Guard<'id>) -> Self {
         Self {
             store: S::default(),
-            version: Wrapping(0),
+            version: VERSION1,
             dirty: false,
             id: guard.into(),
             _marker: PhantomData,
@@ -54,12 +56,12 @@ impl<'id, T, S: Store<(Version, T)>> VManager<'id, T, S> {
     pub fn insert_within_capacity(&mut self, data: T) -> Result<VHandle<'id, T>, T> {
         if self.dirty {
             self.dirty = false;
-            self.version += 1;
+            self.version = self.version.checked_add(1).unwrap_or(VERSION1);
         }
-        self.store.insert_within_capacity((self.version.0, data)).map_err(|(_, data)| data).map(
+        self.store.insert_within_capacity((self.version, data)).map_err(|(_, data)| data).map(
             |index| VHandle {
                 index,
-                version: self.version.0,
+                version: self.version,
                 manager: self.id,
                 _marker: PhantomData,
             },
