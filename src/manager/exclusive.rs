@@ -43,8 +43,15 @@ impl<'id, T, S: Store<T>> XManager<'id, T, S> {
     pub fn reserve(&mut self, additional: usize) -> Result<(), ManagerError> {
         self.store.reserve(additional).map_err(ManagerError::from)
     }
-    pub fn clear(&mut self) {
+    /// # Safety
+    /// This does not invalidate existing [`XHandle`]s.
+    /// Using such a handle is undefined behaviour.
+    pub unsafe fn force_clear(&mut self) {
         self.store.clear();
+    }
+    pub fn into_empty(mut self, guard: Guard<'_>) -> XManager<'_, T, S> {
+        self.store.clear();
+        XManager { store: self.store, id: guard.into(), _marker: PhantomData }
     }
 }
 impl<'id, T, S: ReusableStore<T>> XManager<'id, T, S> {

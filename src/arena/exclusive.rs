@@ -61,8 +61,17 @@ where
             },
         }
     }
-    pub fn clear(&mut self) {
-        self.manager.get_mut().clear()
+    /// # Safety
+    /// This does not invalidate existing [`XHandle`]s.
+    /// Using such a handle is undefined behaviour.
+    pub unsafe fn force_clear(&mut self) {
+        self.manager.get_mut().force_clear()
+    }
+    pub fn into_empty(self, guard: Guard<'_>) -> XArena<'_, T, S> {
+        XArena {
+            manager: UnsafeCell::new(self.manager.into_inner().into_empty(guard)),
+            alloc_lock: self.alloc_lock,
+        }
     }
 }
 impl<'id, T, S> XArena<'id, T, S>
