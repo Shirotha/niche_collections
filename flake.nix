@@ -22,6 +22,7 @@
       overlays = [devshell.overlays.default (import rust-overlay) (self: super: 
       assert !(super ? rust-toolchain); {
         rust-toolchain = super.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+        rustfmt-nightly = (super.rust-bin.selectLatestNightlyWith (tc: tc.rustfmt));
       })];
       config = {};
     });
@@ -55,6 +56,7 @@
         ];
         commands = with pkgs'; [
           { package = rust-toolchain; category = "rust"; }
+          { package = rustfmt-nightly; category = "rust"; }
           { package = mold; category = "build"; }
         ];
       });

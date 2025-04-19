@@ -1,15 +1,16 @@
-use crate::*;
-use generativity::{Guard, Id};
-use manager::ManagerError;
 use std::{marker::PhantomData, num::NonZeroU32};
 
+use generativity::{Guard, Id};
+use manager::ManagerError;
+
+use crate::*;
+
 pub type Version = NonZeroU32;
-// SAFETY: 1 is not zero
-const VERSION1: Version = unsafe { Version::new_unchecked(1) };
+const VERSION1: Version = Version::new(1).unwrap();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VersionHandle<'man, T> {
-    index: Index,
+    index:   Index,
     version: Version,
     manager: Id<'man>,
     _marker: PhantomData<fn() -> T>,
@@ -17,10 +18,10 @@ pub struct VersionHandle<'man, T> {
 pub type VHandle<'man, T> = VersionHandle<'man, T>;
 
 pub struct VersionManager<'id, T, S> {
-    store: S,
+    store:   S,
     version: Version,
-    dirty: bool,
-    id: Id<'id>,
+    dirty:   bool,
+    id:      Id<'id>,
     _marker: PhantomData<T>,
 }
 pub type VManager<'id, T, S> = VersionManager<'id, T, S>;
@@ -30,10 +31,10 @@ where
 {
     pub fn new(guard: Guard<'id>) -> Self {
         Self {
-            store: S::default(),
+            store:   S::default(),
             version: VERSION1,
-            dirty: false,
-            id: guard.into(),
+            dirty:   false,
+            id:      guard.into(),
             _marker: PhantomData,
         }
     }

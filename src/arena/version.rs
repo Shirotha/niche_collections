@@ -1,7 +1,9 @@
-use crate::*;
+use std::{cell::UnsafeCell, mem::transmute, sync::Arc};
+
 use generativity::{Guard, Id};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
-use std::{cell::UnsafeCell, mem::transmute, sync::Arc};
+
+use crate::*;
 
 type ManagerCell<'man, T, S> = UnsafeCell<VManager<'man, T, S>>;
 type ArcLock<T> = Arc<RwLock<T>>;
@@ -10,7 +12,7 @@ type ArcLock<T> = Arc<RwLock<T>>;
 pub struct VersionArena<'id, 'man, T, S> {
     #[allow(clippy::type_complexity)]
     manager: ArcLock<ManagerCell<'man, T, S>>,
-    port: ArcLock<Id<'id>>,
+    port:    ArcLock<Id<'id>>,
 }
 pub type VArena<'id, 'man, T, S> = VersionArena<'id, 'man, T, S>;
 impl<'id, 'man, T, S> VArena<'id, 'man, T, S> {
@@ -24,7 +26,10 @@ impl<'id, 'man, T, S> VArena<'id, 'man, T, S> {
         VersionArenaWriteGuard { manager: self.manager.read(), port: self.port.write() }
     }
     pub fn alloc(&mut self) -> VersionArenaAllocGuard<'_, 'id, 'man, T, S> {
-        VersionArenaAllocGuard { manager: self.manager.upgradable_read(), port: self.port.write() }
+        VersionArenaAllocGuard {
+            manager: self.manager.upgradable_read(),
+            port:    self.port.write(),
+        }
     }
 }
 impl<'id, 'man, T, S> VArena<'id, 'man, T, S>
@@ -34,24 +39,24 @@ where
     pub fn new(guard: Guard<'id>, manager_guard: Guard<'man>) -> Self {
         Self {
             manager: Arc::new(RwLock::new(UnsafeCell::new(VManager::new(manager_guard)))),
-            port: Arc::new(RwLock::new(guard.into())),
+            port:    Arc::new(RwLock::new(guard.into())),
         }
     }
 }
 #[derive(Debug)]
 pub struct VersionArenaReadGuard<'a, 'id, 'man, T, S> {
     manager: RwLockReadGuard<'a, ManagerCell<'man, T, S>>,
-    port: RwLockReadGuard<'a, Id<'id>>,
+    port:    RwLockReadGuard<'a, Id<'id>>,
 }
 #[derive(Debug)]
 pub struct VersionArenaWriteGuard<'a, 'id, 'man, T, S> {
     manager: RwLockReadGuard<'a, ManagerCell<'man, T, S>>,
-    port: RwLockWriteGuard<'a, Id<'id>>,
+    port:    RwLockWriteGuard<'a, Id<'id>>,
 }
 #[derive(Debug)]
 pub struct VersionArenaAllocGuard<'a, 'id, 'man, T, S> {
     manager: RwLockUpgradableReadGuard<'a, ManagerCell<'man, T, S>>,
-    port: RwLockWriteGuard<'a, Id<'id>>,
+    port:    RwLockWriteGuard<'a, Id<'id>>,
 }
 macro_rules! manager {
     (ref $this:ident) => {

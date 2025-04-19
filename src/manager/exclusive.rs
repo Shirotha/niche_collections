@@ -1,11 +1,13 @@
-use crate::*;
+use std::marker::PhantomData;
+
 use generativity::{Guard, Id};
 use manager::ManagerError;
-use std::marker::PhantomData;
+
+use crate::*;
 
 #[derive(Debug)]
 pub struct ExclusiveHandle<'man, T: ?Sized> {
-    index: Index,
+    index:   Index,
     manager: Id<'man>,
     _marker: PhantomData<fn() -> T>,
 }
@@ -13,8 +15,8 @@ pub type XHandle<'man, T> = ExclusiveHandle<'man, T>;
 
 #[derive(Debug)]
 pub struct ExclusiveManager<'id, T, S> {
-    store: S,
-    id: Id<'id>,
+    store:   S,
+    id:      Id<'id>,
     _marker: PhantomData<T>,
 }
 pub type XManager<'id, T, S> = ExclusiveManager<'id, T, S>;

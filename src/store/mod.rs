@@ -1,4 +1,5 @@
 use std::ops::Deref;
+
 use thiserror::Error;
 
 mod simple;
@@ -40,7 +41,7 @@ const ONE: Index = unsafe { Index::new_unchecked(1) };
 
 #[derive(Debug)]
 pub struct BeforeRemoveMany<'a, T, F: FnOnce()> {
-    data: &'a [T],
+    data:           &'a [T],
     commit_removal: Option<F>,
 }
 impl<T, F: FnOnce()> Deref for BeforeRemoveMany<'_, T, F> {

@@ -1,10 +1,10 @@
 mod exclusive;
 pub use exclusive::*;
 mod version;
+use thiserror::Error;
 pub use version::*;
 
 use crate::StoreError;
-use thiserror::Error;
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum ManagerError {

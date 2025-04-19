@@ -2,10 +2,10 @@ mod exclusive;
 pub use exclusive::*;
 
 mod version;
+use thiserror::Error;
 pub use version::*;
 
 use crate::ManagerError;
-use thiserror::Error;
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum ArenaError {
