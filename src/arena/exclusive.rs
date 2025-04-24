@@ -3,7 +3,8 @@ use std::cell::UnsafeCell;
 use generativity::Guard;
 use parking_lot::Mutex;
 
-use crate::*;
+use super::ArenaError;
+use crate::{manager::*, store::*};
 
 macro_rules! manager {
     (ref $this:expr) => {

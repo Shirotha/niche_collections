@@ -95,11 +95,10 @@
 // NOTE: remove this later
 #![allow(dead_code)]
 
-mod store;
-use store::*;
+pub mod arena;
+pub mod manager;
+pub mod store;
 
-mod manager;
-use manager::*;
-
-mod arena;
-use arena::*;
+pub mod prelude {
+    // TODO: add exported names, including arena types without needing to specify store in params
+}

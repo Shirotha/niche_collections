@@ -1,9 +1,9 @@
 use std::marker::PhantomData;
 
 use generativity::{Guard, Id};
-use manager::ManagerError;
 
-use crate::*;
+use super::ManagerError;
+use crate::store::*;
 
 #[derive(Debug)]
 pub struct ExclusiveHandle<'man, T: ?Sized> {

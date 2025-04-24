@@ -3,7 +3,8 @@ use std::{cell::UnsafeCell, mem::transmute, sync::Arc};
 use generativity::{Guard, Id};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
 
-use crate::*;
+use super::ArenaError;
+use crate::{manager::*, store::*};
 
 type ManagerCell<'man, T, S> = UnsafeCell<VManager<'man, T, S>>;
 type ArcLock<T> = Arc<RwLock<T>>;

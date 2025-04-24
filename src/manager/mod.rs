@@ -4,7 +4,7 @@ mod version;
 use thiserror::Error;
 pub use version::*;
 
-use crate::StoreError;
+use crate::store::StoreError;
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum ManagerError {

@@ -5,7 +5,7 @@ mod version;
 use thiserror::Error;
 pub use version::*;
 
-use crate::ManagerError;
+use crate::manager::ManagerError;
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum ArenaError {

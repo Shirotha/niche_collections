@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Debug)]
-struct SimpleStore<T> {
+pub struct SimpleStore<T> {
     data: Vec<T>,
 }
 impl<T> SimpleStore<T> {

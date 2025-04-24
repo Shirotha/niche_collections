@@ -1,9 +1,9 @@
 use std::{marker::PhantomData, num::NonZeroU32};
 
 use generativity::{Guard, Id};
-use manager::ManagerError;
 
-use crate::*;
+use super::ManagerError;
+use crate::store::*;
 
 pub type Version = NonZeroU32;
 const VERSION1: Version = Version::new(1).unwrap();
