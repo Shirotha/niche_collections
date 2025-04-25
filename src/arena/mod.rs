@@ -7,7 +7,7 @@ pub use version::*;
 
 use crate::manager::ManagerError;
 
-#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ArenaError {
     #[error("manager error: {0}")]
     ManagerError(#[from] ManagerError),

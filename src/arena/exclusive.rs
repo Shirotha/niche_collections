@@ -43,6 +43,12 @@ where
     pub fn get_mut(&self, handle: &mut XHandle<'id, T>) -> Result<&mut T, ArenaError> {
         manager!(mut self).get_mut(handle).map_err(ArenaError::from)
     }
+    pub fn get_disjoint_mut<const N: usize>(
+        &self,
+        handles: [&mut XHandle<'id, T>; N],
+    ) -> [&mut T; N] {
+        manager!(mut self).get_disjoint_mut(handles)
+    }
     pub fn insert_within_capacity(&self, data: T) -> Result<XHandle<'id, T>, T> {
         let _guard = self.alloc_lock.lock();
         manager!(mut self).insert_within_capacity(data)

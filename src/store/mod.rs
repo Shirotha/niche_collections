@@ -1,4 +1,7 @@
-use std::ops::Deref;
+use std::{
+    ops::{Deref, Range},
+    slice::GetDisjointMutError,
+};
 
 use thiserror::Error;
 
@@ -13,7 +16,7 @@ pub use intervaltree::*;
 
 pub type Index = nonmax::NonMaxU32;
 
-#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum StoreError {
     #[error("Tried to access data at index {0} when length was {1}.")]
     OutOfBounds(Index, usize),
@@ -23,11 +26,23 @@ pub enum StoreError {
     DoubleFree(Index),
     #[error("Tried to allocate {0} items when length was {1}")]
     OutofMemory(usize, usize),
+    #[error("Disjoint Error: {0}")]
+    DisjointError(#[from] GetDisjointMutError),
 }
 
 pub trait Store<T> {
     fn get(&self, index: Index) -> Result<&T, StoreError>;
     fn get_mut(&mut self, index: Index) -> Result<&mut T, StoreError>;
+    fn get_disjoint_mut<const N: usize>(
+        &mut self,
+        indices: [Index; N],
+    ) -> Result<[&mut T; N], StoreError>;
+    /// # Safety
+    /// Does not perform any checks on the indices.
+    unsafe fn get_disjoint_unchecked_mut<const N: usize>(
+        &mut self,
+        indices: [Index; N],
+    ) -> [&mut T; N];
     fn insert_within_capacity(&mut self, data: T) -> Result<Index, T>;
     fn reserve(&mut self, additional: usize) -> Result<(), StoreError>;
     fn clear(&mut self);
@@ -59,14 +74,23 @@ impl<T, F: FnOnce()> Drop for BeforeRemoveMany<'_, T, F> {
 
 // TODO: is Clone here really needed?
 pub trait MultiStore<T: Clone> {
-    fn get_many(&self, index: Index, len: Index) -> Result<&[T], StoreError>;
-    fn get_many_mut(&mut self, index: Index, len: Index) -> Result<&mut [T], StoreError>;
+    fn get_many(&self, index: Range<Index>) -> Result<&[T], StoreError>;
+    fn get_many_mut(&mut self, index: Range<Index>) -> Result<&mut [T], StoreError>;
+    fn get_many_disjoint_mut<const N: usize>(
+        &mut self,
+        indices: [Range<Index>; N],
+    ) -> Result<[&mut [T]; N], StoreError>;
+    /// # Safety
+    /// Does not perform any checks on the indices.
+    unsafe fn get_many_disjoint_unchecked_mut<const N: usize>(
+        &mut self,
+        indices: [Range<Index>; N],
+    ) -> [&mut [T]; N];
     fn insert_many_within_capacity(&mut self, data: &[T]) -> Option<Index>;
 }
 pub trait ReusableMultiStore<T: Clone>: MultiStore<T> {
     fn remove_many(
         &mut self,
-        index: Index,
-        len: Index,
+        index: Range<Index>,
     ) -> Result<BeforeRemoveMany<'_, T, impl FnOnce()>, StoreError>;
 }

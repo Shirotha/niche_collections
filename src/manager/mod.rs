@@ -6,7 +6,7 @@ pub use version::*;
 
 use crate::store::StoreError;
 
-#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ManagerError {
     #[error("store error: {0}")]
     StoreError(#[from] StoreError),

@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, num::NonZeroU32};
+use std::{array, marker::PhantomData, num::NonZeroU32};
 
 use generativity::{Guard, Id};
 
@@ -53,6 +53,19 @@ impl<'id, T, S: Store<(Version, T)>> VManager<'id, T, S> {
                 .then_some(data)
                 .ok_or(ManagerError::BadHandle("version mismatch"))
         })
+    }
+    pub fn get_disjoint_mut<const N: usize>(
+        &mut self,
+        handles: [VHandle<'id, T>; N],
+    ) -> Result<[&mut T; N], ManagerError> {
+        let entries = self
+            .store
+            .get_disjoint_mut(array::from_fn(|i| handles[i].index))
+            .map_err(ManagerError::from)?;
+        if entries.iter().zip(handles).any(|((v, _), handle)| *v != handle.version) {
+            return Err(ManagerError::BadHandle("version mismatch"));
+        }
+        Ok(entries.map(|(_, data)| data))
     }
     pub fn insert_within_capacity(&mut self, data: T) -> Result<VHandle<'id, T>, T> {
         if self.dirty {

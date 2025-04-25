@@ -35,6 +35,13 @@ impl<'id, T, S: Store<T>> XManager<'id, T, S> {
     pub fn get_mut(&mut self, handle: &mut XHandle<'id, T>) -> Result<&mut T, ManagerError> {
         self.store.get_mut(handle.index).map_err(ManagerError::from)
     }
+    pub fn get_disjoint_mut<const N: usize>(
+        &mut self,
+        handles: [&mut XHandle<'id, T>; N],
+    ) -> [&mut T; N] {
+        // SAFETY: exclusive handles are disjoint by definition
+        unsafe { self.store.get_disjoint_unchecked_mut(handles.map(|handle| handle.index)) }
+    }
     pub fn insert_within_capacity(&mut self, data: T) -> Result<XHandle<'id, T>, T> {
         self.store.insert_within_capacity(data).map(|index| XHandle {
             index,

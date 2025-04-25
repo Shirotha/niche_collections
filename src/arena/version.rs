@@ -104,6 +104,14 @@ macro_rules! impl_write {
             pub fn get_mut(&mut self, handle: VHandle<'id, T>) -> Result<&mut T, ArenaError> {
                 manager!(mut self).get_mut(rehandle!(handle<T> 'id -> 'man)).map_err(ArenaError::from)
             }
+            pub fn get_disjoint_mut<const N: usize>(
+                &mut self,
+                handles: [VHandle<'id, T>; N],
+            ) -> Result<[&mut T; N], ArenaError> {
+                manager!(mut self)
+                    .get_disjoint_mut(handles.map(|handle| rehandle!(handle<T> 'id -> 'man)))
+                    .map_err(ArenaError::from)
+            }
         }
 
     };

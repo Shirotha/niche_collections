@@ -52,6 +52,44 @@ impl<T> Store<T> for FreelistStore<T> {
         }
     }
 
+    fn get_disjoint_mut<const N: usize>(
+        &mut self,
+        indices: [Index; N],
+    ) -> Result<[&mut T; N], StoreError> {
+        let entries = self
+            .data
+            .get_disjoint_mut(indices.map(|i| i.get() as usize))
+            .map_err(StoreError::from)?;
+        if let Some((_, index)) =
+            entries.iter().zip(indices).find(|(entry, _)| matches!(entry, Entry::Free(_)))
+        {
+            return Err(StoreError::AccessAfterFree(index));
+        }
+        Ok(entries.map(|entry| {
+            if let Entry::Occupied(x) = entry {
+                x
+            } else {
+                unreachable!("free entries should be filtered out already")
+            }
+        }))
+    }
+
+    unsafe fn get_disjoint_unchecked_mut<const N: usize>(
+        &mut self,
+        indices: [Index; N],
+    ) -> [&mut T; N] {
+        // SAFETY: assumptions guarantied by caller
+        unsafe {
+            self.data.get_disjoint_unchecked_mut(indices.map(|i| i.get() as usize)).map(|entry| {
+                if let Entry::Occupied(x) = entry {
+                    x
+                } else {
+                    panic!("tried to access freed entry")
+                }
+            })
+        }
+    }
+
     fn insert_within_capacity(&mut self, data: T) -> Result<Index, T> {
         if let Some(index) = self.head.take() {
             let old = replace(&mut self.data[index.get() as usize], Entry::Occupied(data));
