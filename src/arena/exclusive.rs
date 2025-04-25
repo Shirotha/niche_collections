@@ -51,7 +51,7 @@ where
         self.manager.get_mut().reserve(additional).map_err(ArenaError::from)
     }
     pub fn insert(&mut self, data: T) -> Result<XHandle<'id, T>, (T, ArenaError)> {
-        match self.insert_within_capacity(data) {
+        match self.manager.get_mut().insert_within_capacity(data) {
             Ok(handle) => Ok(handle),
             Err(data) => {
                 if let Err(err) = self.reserve(1) {

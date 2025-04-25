@@ -11,7 +11,6 @@ type ArcLock<T> = Arc<RwLock<T>>;
 
 #[derive(Debug, Clone)]
 pub struct VersionArena<'id, 'man, T, S> {
-    #[allow(clippy::type_complexity)]
     manager: ArcLock<ManagerCell<'man, T, S>>,
     port:    ArcLock<Id<'id>>,
 }
@@ -68,7 +67,7 @@ macro_rules! manager {
         // SAFETY: manager always holds a valid value
         unsafe { $this.manager.get().as_mut().unwrap_unchecked() }
     };
-    (lock $this:ident|$manager:ident| $body:expr) => {
+    (lock $this:ident |$manager:ident| $body:expr) => {
         $this.manager.with_upgraded(|manager| {
             let $manager = unsafe { manager.get().as_mut().unwrap_unchecked() };
             $body

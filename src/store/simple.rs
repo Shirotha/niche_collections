@@ -32,20 +32,24 @@ impl<T> Store<T> for SimpleStore<T> {
         if index == self.data.capacity() {
             return Err(data);
         }
-        match Index::new(index as u32) {
-            Some(index) => {
-                self.data.push(data);
-                Ok(index)
-            },
-            None => Err(data),
-        }
+        self.data.push(data);
+        // SAFETY: all indices within capacity are valid
+        Ok(unsafe { Index::new_unchecked(index as u32) })
     }
 
     fn reserve(&mut self, additional: usize) -> Result<(), StoreError> {
-        if self.data.len() + additional >= Index::MAX.get() as usize {
-            return Err(StoreError::OutofMemory(additional, self.data.len()));
+        let len = self.data.len();
+        let min_target =
+            len.checked_add(additional).ok_or(StoreError::OutofMemory(additional, len))?;
+        let target = min_target.max(2 * len).min(Index::MAX.get() as usize + 1);
+        if target < min_target {
+            return Err(StoreError::OutofMemory(additional, len));
         }
-        self.data.reserve(additional);
+        self.data.reserve_exact(target - len);
+        assert!(
+            self.data.capacity() <= Index::MAX.get() as usize + 1,
+            "capacity exceeds maximum index"
+        );
         Ok(())
     }
 
@@ -58,27 +62,21 @@ impl<T: Clone> MultiStore<T> for SimpleStore<T> {
     fn get_many(&self, index: Index, len: Index) -> Result<&[T], StoreError> {
         let i = index.get() as usize;
         let n = len.get() as usize;
-        if i + n > self.data.len().min(Index::MAX.get() as usize) {
-            return Err(StoreError::OutOfBounds(index, self.data.len()));
-        }
-        Ok(&self.data[i..i + n])
+        self.data.get(i..i + n).ok_or(StoreError::OutOfBounds(index, n))
     }
 
     fn get_many_mut(&mut self, index: Index, len: Index) -> Result<&mut [T], StoreError> {
         let i = index.get() as usize;
         let n = len.get() as usize;
-        if i + n > self.data.len().min(Index::MAX.get() as usize) {
-            return Err(StoreError::OutOfBounds(index, self.data.len()));
-        }
-        Ok(&mut self.data[i..i + n])
+        self.data.get_mut(i..i + n).ok_or(StoreError::OutOfBounds(index, n))
     }
 
     fn insert_many_within_capacity(&mut self, data: &[T]) -> Option<Index> {
         if self.data.len() + data.len() > self.data.capacity() {
             return None;
         }
-        let index =
-            Index::new(self.data.len() as u32).expect("index is in capacity and should be valid");
+        // SAFETY: all indices within capacity are valid
+        let index = unsafe { Index::new_unchecked(self.data.len() as u32) };
         self.data.extend_from_slice(data);
         Some(index)
     }

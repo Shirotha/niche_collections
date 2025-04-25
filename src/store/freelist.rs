@@ -18,7 +18,7 @@ impl<T> FreelistStore<T> {
         Self::default()
     }
     pub fn with_capacity(capacity: usize) -> Self {
-        if capacity > Index::MAX.get() as usize {
+        if capacity > Index::MAX.get() as usize + 1 {
             panic!("capacity exceeds largest possible index!")
         }
         Self { data: Vec::with_capacity(capacity), head: None }
@@ -66,17 +66,24 @@ impl<T> Store<T> for FreelistStore<T> {
             if len == self.data.capacity() {
                 return Err(data);
             }
-            let index = Index::new(len as u32).expect("index is in capacity and should be valid");
             self.data.push(Entry::Occupied(data));
-            Ok(index)
+            Ok(unsafe { Index::new_unchecked(len as u32) })
         }
     }
 
     fn reserve(&mut self, additional: usize) -> Result<(), StoreError> {
-        if self.data.len() + additional >= Index::MAX.get() as usize {
-            return Err(StoreError::OutofMemory(additional, self.data.len()));
+        let len = self.data.len();
+        let min_target =
+            len.checked_add(additional).ok_or(StoreError::OutofMemory(additional, len))?;
+        let target = min_target.max(2 * len).min(Index::MAX.get() as usize + 1);
+        if target < min_target {
+            return Err(StoreError::OutofMemory(additional, len));
         }
-        self.data.reserve(additional);
+        self.data.reserve_exact(target - len);
+        assert!(
+            self.data.capacity() <= Index::MAX.get() as usize + 1,
+            "capacity exceeds maximum index"
+        );
         Ok(())
     }
 
