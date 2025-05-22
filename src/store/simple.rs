@@ -68,6 +68,7 @@ impl<T> Store<T> for SimpleStore<T> {
         Ok(())
     }
 
+    /// This will not drop existing items and might cause a memory leak
     fn clear(&mut self) {
         self.data.clear();
     }
@@ -107,13 +108,15 @@ impl<T: Clone> MultiStore<T> for SimpleStore<T> {
         }
     }
 
-    fn insert_many_within_capacity(&mut self, data: &[T]) -> Option<Index> {
-        if self.data.len() + data.len() > self.data.capacity() {
+    fn insert_many_within_capacity(
+        &mut self,
+        len: usize,
+    ) -> Option<(Index, BeforeInsertMany<'_, T>)> {
+        if self.data.len() + len > self.data.capacity() {
             return None;
         }
         // SAFETY: all indices within capacity are valid
         let index = unsafe { Index::new_unchecked(self.data.len() as u32) };
-        self.data.extend_from_slice(data);
-        Some(index)
+        Some((index, BeforeInsertMany { data: &mut self.data, len }))
     }
 }

@@ -1,6 +1,7 @@
 use std::{
+    mem::MaybeUninit,
     ops::{Deref, Range},
-    slice::GetDisjointMutError,
+    slice::{self, GetDisjointMutError},
 };
 
 use thiserror::Error;
@@ -55,9 +56,35 @@ pub trait ReusableStore<T>: Store<T> {
 const ONE: Index = unsafe { Index::new_unchecked(1) };
 
 #[derive(Debug)]
+pub struct BeforeInsertMany<'a, T> {
+    data: &'a mut Vec<T>,
+    len:  usize,
+}
+impl<T> BeforeInsertMany<'_, T> {
+    pub fn get_mut(&mut self) -> &mut [MaybeUninit<T>] {
+        &mut self.data.spare_capacity_mut()[0..self.len]
+    }
+}
+impl<T> Drop for BeforeInsertMany<'_, T> {
+    fn drop(&mut self) {
+        unsafe { self.data.set_len(self.data.len() + self.len) };
+    }
+}
+
+#[derive(Debug)]
 pub struct BeforeRemoveMany<'a, T, F: FnOnce()> {
     data:           &'a [T],
     commit_removal: Option<F>,
+}
+impl<'a, T, F: FnOnce()> BeforeRemoveMany<'a, T, F> {
+    /// # Safety
+    /// `data` has to be a valid `U` pointer and `len` has to be compatible.
+    pub(super) unsafe fn transmute<U>(mut self, len: usize) -> BeforeRemoveMany<'a, U, F> {
+        BeforeRemoveMany {
+            data:           unsafe { slice::from_raw_parts(self.data.as_ptr() as *const U, len) },
+            commit_removal: self.commit_removal.take(),
+        }
+    }
 }
 impl<T, F: FnOnce()> Deref for BeforeRemoveMany<'_, T, F> {
     type Target = [T];
@@ -72,8 +99,7 @@ impl<T, F: FnOnce()> Drop for BeforeRemoveMany<'_, T, F> {
     }
 }
 
-// TODO: is Clone here really needed?
-pub trait MultiStore<T: Clone> {
+pub trait MultiStore<T: Clone>: Store<T> {
     fn get_many(&self, index: Range<Index>) -> Result<&[T], StoreError>;
     fn get_many_mut(&mut self, index: Range<Index>) -> Result<&mut [T], StoreError>;
     fn get_many_disjoint_mut<const N: usize>(
@@ -86,7 +112,10 @@ pub trait MultiStore<T: Clone> {
         &mut self,
         indices: [Range<Index>; N],
     ) -> [&mut [T]; N];
-    fn insert_many_within_capacity(&mut self, data: &[T]) -> Option<Index>;
+    fn insert_many_within_capacity(
+        &mut self,
+        len: usize,
+    ) -> Option<(Index, BeforeInsertMany<'_, T>)>;
 }
 pub trait ReusableMultiStore<T: Clone>: MultiStore<T> {
     fn remove_many(

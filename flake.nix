@@ -1,3 +1,4 @@
+# FIXME: ~/.config/direnv/lib/hm-nix-direnv.sh depends on devshell-dir/env.bash but it isn't rooted
 {
   description = "develop and build with nix";
   

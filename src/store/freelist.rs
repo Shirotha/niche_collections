@@ -125,6 +125,7 @@ impl<T> Store<T> for FreelistStore<T> {
         Ok(())
     }
 
+    /// This will not drop existing items and might cause a memory leak
     fn clear(&mut self) {
         self.data.clear();
         self.head = None;
