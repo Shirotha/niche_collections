@@ -52,9 +52,6 @@ pub trait ReusableStore<T>: Store<T> {
     fn remove(&mut self, index: Index) -> Result<T, StoreError>;
 }
 
-// SAFETY: 1 is always a valid index
-const ONE: Index = unsafe { Index::new_unchecked(1) };
-
 #[derive(Debug)]
 pub struct BeforeInsertMany<'a, T> {
     data: &'a mut Vec<T>,

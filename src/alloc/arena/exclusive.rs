@@ -4,7 +4,7 @@ use generativity::Guard;
 use parking_lot::Mutex;
 
 use super::ArenaError;
-use crate::{manager::*, store::*};
+use crate::alloc::{manager::*, store::*};
 
 macro_rules! manager {
     (ref $this:expr) => {

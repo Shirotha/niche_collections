@@ -3,7 +3,7 @@ use std::{array, marker::PhantomData, num::NonZeroU32};
 use generativity::{Guard, Id};
 
 use super::*;
-use crate::store::*;
+use crate::alloc::store::*;
 
 pub type Version = NonZeroU32;
 const VERSION1: Version = Version::new(1).unwrap();

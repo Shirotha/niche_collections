@@ -1,2 +1,3 @@
-# handling-arena
-arena allocator that uses typed handles instead of indices
+# Niche Collections
+## Arena
+Arena allocator that uses typed handles instead of indices

@@ -13,7 +13,7 @@ mod version;
 use thiserror::Error;
 pub use version::*;
 
-use crate::store::*;
+use crate::alloc::store::*;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ManagerError {

@@ -3,13 +3,13 @@ use std::marker::PhantomData;
 use generativity::{Guard, Id};
 
 use super::*;
-use crate::store::*;
+use crate::alloc::store::*;
 
 #[derive(Debug)]
 pub struct ExclusiveHandle<'man, T: ?Sized> {
-    index:   Index,
-    manager: Id<'man>,
-    _marker: PhantomData<fn() -> T>,
+    index:    Index,
+    _manager: Id<'man>,
+    _marker:  PhantomData<fn() -> T>,
 }
 pub type XHandle<'man, T> = ExclusiveHandle<'man, T>;
 
@@ -69,7 +69,7 @@ where
     pub fn insert_within_capacity(&mut self, data: T) -> Result<XHandle<'id, T>, T> {
         self.store.insert_within_capacity(data).map(|index| XHandle {
             index,
-            manager: self.id,
+            _manager: self.id,
             _marker: PhantomData,
         })
     }
@@ -127,7 +127,7 @@ where
         let (index, mut lock) = self.store.insert_many_within_capacity(size)?;
         // SAFETY: insert_many_* always returns a valid target
         unsafe { Slices::write_slice(data, (), lock.get_mut()) };
-        Some(XHandle { index, manager: self.id, _marker: PhantomData })
+        Some(XHandle { index, _manager: self.id, _marker: PhantomData })
     }
 }
 impl<'id, U: RawBytes, S> XManager<'id, Slices<U>, S>
@@ -178,7 +178,7 @@ where
             Some((index, mut lock)) => {
                 // SAFETY: insert_many_* always returns a valid target
                 unsafe { Mixed::write_instance(data, lock.get_mut()) };
-                Ok(XHandle { index, manager: self.id, _marker: PhantomData })
+                Ok(XHandle { index, _manager: self.id, _marker: PhantomData })
             },
             None => Err(data),
         }
@@ -216,6 +216,7 @@ mod test {
     /// let handle = managerA.insert_within_capacity(true).unwrap();
     /// let val = managerB.get(&handle).unwrap();
     /// ```
+    #[expect(dead_code)]
     pub struct HandlesAreBranded;
 
     #[test]

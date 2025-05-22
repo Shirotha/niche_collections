@@ -4,7 +4,7 @@ use generativity::{Guard, Id};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
 
 use super::ArenaError;
-use crate::{manager::*, store::*};
+use crate::alloc::{manager::*, store::*};
 
 type ManagerCell<'man, K, S> = UnsafeCell<VManager<'man, K, S>>;
 type ArcLock<T> = Arc<RwLock<T>>;
@@ -41,15 +41,15 @@ impl<'id, 'man, K: Kind, S> VArena<'id, 'man, K, S> {
         HandleMap(PhantomData)
     }
     pub fn read(&self) -> VersionArenaReadGuard<'_, 'id, 'man, K, S> {
-        VersionArenaReadGuard { manager: self.manager.read(), port: self.port.read() }
+        VersionArenaReadGuard { manager: self.manager.read(), _port: self.port.read() }
     }
     pub fn write(&mut self) -> VersionArenaWriteGuard<'_, 'id, 'man, K, S> {
-        VersionArenaWriteGuard { manager: self.manager.read(), port: self.port.write() }
+        VersionArenaWriteGuard { manager: self.manager.read(), _port: self.port.write() }
     }
     pub fn alloc(&mut self) -> VersionArenaAllocGuard<'_, 'id, 'man, K, S> {
         VersionArenaAllocGuard {
             manager: self.manager.upgradable_read(),
-            port:    self.port.write(),
+            _port:   self.port.write(),
         }
     }
 }
@@ -67,17 +67,17 @@ where
 #[derive(Debug)]
 pub struct VersionArenaReadGuard<'a, 'id, 'man, K: Kind, S> {
     manager: RwLockReadGuard<'a, ManagerCell<'man, K, S>>,
-    port:    RwLockReadGuard<'a, Id<'id>>,
+    _port:   RwLockReadGuard<'a, Id<'id>>,
 }
 #[derive(Debug)]
 pub struct VersionArenaWriteGuard<'a, 'id, 'man, K: Kind, S> {
     manager: RwLockReadGuard<'a, ManagerCell<'man, K, S>>,
-    port:    RwLockWriteGuard<'a, Id<'id>>,
+    _port:   RwLockWriteGuard<'a, Id<'id>>,
 }
 #[derive(Debug)]
 pub struct VersionArenaAllocGuard<'a, 'id, 'man, K: Kind, S> {
     manager: RwLockUpgradableReadGuard<'a, ManagerCell<'man, K, S>>,
-    port:    RwLockWriteGuard<'a, Id<'id>>,
+    _port:   RwLockWriteGuard<'a, Id<'id>>,
 }
 macro_rules! manager {
     (ref $this:ident) => {
