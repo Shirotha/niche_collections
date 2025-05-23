@@ -3,7 +3,7 @@ use std::cell::UnsafeCell;
 use generativity::Guard;
 use parking_lot::Mutex;
 
-use super::ArenaError;
+use super::*;
 use crate::alloc::{manager::*, store::*};
 
 macro_rules! manager {
@@ -18,11 +18,10 @@ macro_rules! manager {
 }
 
 #[derive(Debug)]
-pub struct ExclusiveArena<'id, K: Kind, S> {
+pub struct XArena<'id, K: Kind, S> {
     manager:    UnsafeCell<XManager<'id, K, S>>,
     alloc_lock: Mutex<()>,
 }
-pub type XArena<'id, K, S> = ExclusiveArena<'id, K, S>;
 // SAFETY: XArena is inherently concurrent by design
 unsafe impl<K: Kind, S> Sync for XArena<'_, K, S> {}
 impl<'id, K: Kind, S> XArena<'id, K, S>
@@ -36,9 +35,9 @@ where
 impl<K, S> XArena<'_, K, S>
 where
     K: Kind,
-    S: Store<K::Stored>,
+    S: Store<K::XElement>,
 {
-    pub fn reserve(&mut self, additional: usize) -> Result<(), ArenaError> {
+    pub fn reserve(&mut self, additional: Length) -> Result<(), ArenaError> {
         Ok(self.manager.get_mut().reserve(additional)?)
     }
     /// This will not drop existing items and might cause a memory leak

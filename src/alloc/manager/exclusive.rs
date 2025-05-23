@@ -6,20 +6,18 @@ use super::*;
 use crate::alloc::store::*;
 
 #[derive(Debug)]
-pub struct ExclusiveHandle<'man, T: ?Sized> {
+pub struct XHandle<'man, T: ?Sized> {
     index:    Index,
     _manager: Id<'man>,
     _marker:  PhantomData<fn() -> T>,
 }
-pub type XHandle<'man, T> = ExclusiveHandle<'man, T>;
 
 #[derive(Debug)]
-pub struct ExclusiveManager<'id, K: Kind, S> {
+pub struct XManager<'id, K: Kind, S> {
     store:   S,
     id:      Id<'id>,
     _marker: PhantomData<K>,
 }
-pub type XManager<'id, K, S> = ExclusiveManager<'id, K, S>;
 impl<'id, K: Kind, S> XManager<'id, K, S>
 where
     S: Default,
@@ -31,9 +29,9 @@ where
 impl<K, S> XManager<'_, K, S>
 where
     K: Kind,
-    S: Store<K::Stored>,
+    S: Store<K::XElement>,
 {
-    pub fn reserve(&mut self, additional: usize) -> Result<(), ManagerError> {
+    pub fn reserve(&mut self, additional: Length) -> Result<(), ManagerError> {
         Ok(self.store.reserve(additional)?)
     }
     /// This will not drop existing items and might cause a memory leak

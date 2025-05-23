@@ -19,11 +19,13 @@ impl<T> Default for SimpleStore<T> {
 }
 impl<T> Store<T> for SimpleStore<T> {
     fn get(&self, index: Index) -> Result<&T, StoreError> {
-        self.data.get(index.get() as usize).ok_or(StoreError::OutOfBounds(index, self.data.len()))
+        self.data
+            .get(index.get() as usize)
+            .ok_or(StoreError::OutOfBounds(index, self.data.len() as Length))
     }
 
     fn get_mut(&mut self, index: Index) -> Result<&mut T, StoreError> {
-        let len = self.data.len();
+        let len = self.data.len() as Length;
         self.data.get_mut(index.get() as usize).ok_or(StoreError::OutOfBounds(index, len))
     }
 
@@ -52,15 +54,15 @@ impl<T> Store<T> for SimpleStore<T> {
         Ok(unsafe { Index::new_unchecked(index as u32) })
     }
 
-    fn reserve(&mut self, additional: usize) -> Result<(), StoreError> {
-        let len = self.data.len();
+    fn reserve(&mut self, additional: Length) -> Result<(), StoreError> {
+        let len = self.data.len() as Length;
         let min_target =
             len.checked_add(additional).ok_or(StoreError::OutofMemory(additional, len))?;
-        let target = min_target.max(2 * len).min(Index::MAX.get() as usize + 1);
+        let target = min_target.max(2 * len).min(Index::MAX.get() + 1);
         if target < min_target {
             return Err(StoreError::OutofMemory(additional, len));
         }
-        self.data.reserve_exact(target - len);
+        self.data.reserve_exact((target - len) as usize);
         assert!(
             self.data.capacity() <= Index::MAX.get() as usize + 1,
             "capacity exceeds maximum index"
@@ -76,15 +78,19 @@ impl<T> Store<T> for SimpleStore<T> {
 
 impl<T: Clone> MultiStore<T> for SimpleStore<T> {
     fn get_many(&self, index: Range<Index>) -> Result<&[T], StoreError> {
-        let a = index.start.get() as usize;
-        let b = index.end.get() as usize;
-        self.data.get(a..b).ok_or(StoreError::OutOfBounds(index.start, b.saturating_sub(a)))
+        let a = index.start.get();
+        let b = index.end.get();
+        self.data
+            .get(a as usize..b as usize)
+            .ok_or(StoreError::OutOfBounds(index.start, b.saturating_sub(a)))
     }
 
     fn get_many_mut(&mut self, index: Range<Index>) -> Result<&mut [T], StoreError> {
-        let a = index.start.get() as usize;
-        let b = index.end.get() as usize;
-        self.data.get_mut(a..b).ok_or(StoreError::OutOfBounds(index.start, b.saturating_sub(a)))
+        let a = index.start.get();
+        let b = index.end.get();
+        self.data
+            .get_mut(a as usize..b as usize)
+            .ok_or(StoreError::OutOfBounds(index.start, b.saturating_sub(a)))
     }
 
     fn get_many_disjoint_mut<const N: usize>(
@@ -110,8 +116,9 @@ impl<T: Clone> MultiStore<T> for SimpleStore<T> {
 
     fn insert_many_within_capacity(
         &mut self,
-        len: usize,
+        len: Length,
     ) -> Option<(Index, BeforeInsertMany<'_, T>)> {
+        let len = len as usize;
         if self.data.len() + len > self.data.capacity() {
             return None;
         }

@@ -1,30 +1,33 @@
-use std::{array, marker::PhantomData, num::NonZeroU32};
+use std::{array, marker::PhantomData, mem::transmute};
 
 use generativity::{Guard, Id};
 
 use super::*;
 use crate::alloc::store::*;
 
-pub type Version = NonZeroU32;
 const VERSION1: Version = Version::new(1).unwrap();
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VersionHandle<'man, T: ?Sized> {
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct VHandle<'man, T: ?Sized> {
     index:   Index,
     version: Version,
     manager: Id<'man>,
     _marker: PhantomData<fn() -> T>,
 }
-pub type VHandle<'man, T> = VersionHandle<'man, T>;
+impl<T: ?Sized> Clone for VHandle<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T: ?Sized> Copy for VHandle<'_, T> {}
 
-pub struct VersionManager<'id, K: Kind, S> {
+pub struct VManager<'id, K: Kind, S> {
     store:   S,
     version: Version,
     dirty:   bool,
     id:      Id<'id>,
     _marker: PhantomData<K>,
 }
-pub type VManager<'id, K, S> = VersionManager<'id, K, S>;
 impl<'id, K: Kind, S> VManager<'id, K, S>
 where
     S: Default,
@@ -39,39 +42,12 @@ where
         }
     }
 }
-impl<S, T> VManager<'_, Typed<T>, S>
+impl<S, K> VManager<'_, K, S>
 where
-    S: Store<(Version, T)>,
+    S: Store<K::VElement>,
+    K: Kind,
 {
-    pub fn reserve(&mut self, additional: usize) -> Result<(), ManagerError> {
-        self.store.reserve(additional).map_err(ManagerError::from)
-    }
-    /// This will not drop existing items and might cause a memory leak
-    pub fn clear(&mut self) {
-        self.dirty = true;
-        self.store.clear();
-    }
-}
-impl<U, S> VManager<'_, Slices<U>, S>
-where
-    U: RawBytes,
-    S: MultiStore<U>,
-{
-    pub fn reserve(&mut self, additional: usize) -> Result<(), ManagerError> {
-        self.store.reserve(additional).map_err(ManagerError::from)
-    }
-    /// This will not drop existing items and might cause a memory leak
-    pub fn clear(&mut self) {
-        self.dirty = true;
-        self.store.clear();
-    }
-}
-impl<U, S> VManager<'_, Mixed<U>, S>
-where
-    U: RawBytes,
-    S: MultiStore<U>,
-{
-    pub fn reserve(&mut self, additional: usize) -> Result<(), ManagerError> {
+    pub fn reserve(&mut self, additional: Length) -> Result<(), ManagerError> {
         self.store.reserve(additional).map_err(ManagerError::from)
     }
     /// This will not drop existing items and might cause a memory leak
@@ -115,6 +91,18 @@ where
                 _marker: PhantomData,
             },
         )
+    }
+    pub(crate) fn bump_version(
+        &mut self,
+        mut handle: VHandle<'id, T>,
+    ) -> Result<VHandle<'id, T>, ManagerError> {
+        let (v, _) = self.store.get_mut(handle.index)?;
+        if *v != handle.version {
+            return Err(ManagerError::BadHandle("version mismatch"));
+        }
+        handle.version = handle.version.checked_add(1).unwrap_or(VERSION1);
+        *v = handle.version;
+        Ok(handle)
     }
 }
 impl<'id, T, S> VManager<'id, Typed<T>, S>
@@ -186,6 +174,22 @@ where
         unsafe { Slices::<U>::write_slice(data, self.version, lock.get_mut()) };
         Some(VHandle { index, version: self.version, manager: self.id, _marker: PhantomData })
     }
+    pub(crate) fn bump_version<T>(
+        &mut self,
+        mut handle: VHandle<'id, [T]>,
+    ) -> Result<VHandle<'id, [T]>, ManagerError> {
+        let ((len, v), _) =
+            unsafe { Slices::<U>::read_header::<Version>(&self.store, handle.index)? };
+        if v != handle.version {
+            return Err(ManagerError::BadHandle("version mismatch"));
+        }
+        handle.version = handle.version.checked_add(1).unwrap_or(VERSION1);
+        let dst = self.store.get_many_mut(Slices::<U>::header_range::<Version>(handle.index)?)?;
+        // SAFETY: transmuting to MaybeUninit is always valid
+        let dst = unsafe { transmute::<&mut [U], &mut [MaybeUninit<U>]>(dst) };
+        Slices::<U>::write_header(len, handle.version, dst);
+        Ok(handle)
+    }
 }
 impl<'id, U, S> VManager<'id, Slices<U>, S>
 where
@@ -253,6 +257,19 @@ where
             },
             None => Err(data),
         }
+    }
+    pub(crate) fn bump_version<T>(
+        &mut self,
+        mut handle: VHandle<'id, T>,
+    ) -> Result<VHandle<'id, T>, ManagerError> {
+        let (v, _) =
+            unsafe { Mixed::<U>::get_instance_mut::<(Version, T)>(&mut self.store, handle.index)? };
+        if *v != handle.version {
+            return Err(ManagerError::BadHandle("version mismatch"));
+        }
+        handle.version = handle.version.checked_add(1).unwrap_or(VERSION1);
+        *v = handle.version;
+        Ok(handle)
     }
 }
 impl<'id, U, S> VManager<'id, Mixed<U>, S>

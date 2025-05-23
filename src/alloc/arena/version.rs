@@ -1,9 +1,9 @@
-use std::{cell::UnsafeCell, marker::PhantomData, mem::transmute, sync::Arc};
+use std::{cell::UnsafeCell, mem::transmute, sync::Arc};
 
 use generativity::{Guard, Id};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
 
-use super::ArenaError;
+use super::*;
 use crate::alloc::{manager::*, store::*};
 
 type ManagerCell<'man, K, S> = UnsafeCell<VManager<'man, K, S>>;
@@ -16,68 +16,55 @@ macro_rules! map_handle {
     };
 }
 #[derive(Debug, Clone, Copy)]
-pub struct HandleMap<'from, 'to>(PhantomData<fn(&'from ()) -> &'to ()>);
+pub struct HandleMap<'from, 'to> {
+    _from: Id<'from>,
+    _to:   Id<'to>,
+}
 impl<'from, 'to> HandleMap<'from, 'to> {
-    pub fn apply<T>(self, handle: VHandle<'from, T>) -> VHandle<'to, T> {
-        // SAFETY: the existance of self implies 'to was joint with 'from
-        map_handle!(handle<T> 'from -> 'to)
+    pub fn apply<H>(self, target: H::Container<'from>) -> H::Container<'to>
+    where
+        H: MappableHandle,
+    {
+        let handle = H::handle(&target);
+        H::update(target, map_handle!(handle<H::Data> 'from -> 'to))
     }
-    pub fn chain<'next>(self, _other: HandleMap<'to, 'next>) -> HandleMap<'from, 'next> {
-        HandleMap(PhantomData)
+    pub fn chain<'next>(self, other: HandleMap<'to, 'next>) -> HandleMap<'from, 'next> {
+        HandleMap { _from: self._from, _to: other._to }
+    }
+}
+pub trait MappableHandle {
+    type Container<'id>;
+    type Data: ?Sized;
+
+    fn handle<'id>(target: &Self::Container<'id>) -> VHandle<'id, Self::Data>;
+
+    #[expect(clippy::needless_lifetimes)]
+    fn update<'from, 'to>(
+        from: Self::Container<'from>,
+        to: VHandle<'to, Self::Data>,
+    ) -> Self::Container<'to>;
+}
+impl<T> MappableHandle for VHandle<'_, T> {
+    type Container<'id> = VHandle<'id, T>;
+    type Data = T;
+
+    fn handle<'id>(target: &Self::Container<'id>) -> VHandle<'id, Self::Data> {
+        *target
+    }
+
+    #[expect(clippy::needless_lifetimes)]
+    fn update<'from, 'to>(
+        _from: Self::Container<'from>,
+        to: VHandle<'to, Self::Data>,
+    ) -> Self::Container<'to> {
+        to
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct VersionArena<'id, 'man, K: Kind, S> {
+pub struct VArena<'id, 'man, K: Kind, S> {
     manager: ArcLock<ManagerCell<'man, K, S>>,
     port:    ArcLock<Id<'id>>,
-}
-pub type VArena<'id, 'man, K, S> = VersionArena<'id, 'man, K, S>;
-impl<'id, 'man, K: Kind, S> VArena<'id, 'man, K, S> {
-    pub fn split<'new>(&self, guard: Guard<'new>) -> VArena<'new, 'man, K, S> {
-        VArena { manager: self.manager.clone(), port: Arc::new(RwLock::new(guard.into())) }
-    }
-    pub fn join<'other>(&self, _other: VArena<'other, 'man, K, S>) -> HandleMap<'other, 'id> {
-        HandleMap(PhantomData)
-    }
-    pub fn read(&self) -> VersionArenaReadGuard<'_, 'id, 'man, K, S> {
-        VersionArenaReadGuard { manager: self.manager.read(), _port: self.port.read() }
-    }
-    pub fn write(&mut self) -> VersionArenaWriteGuard<'_, 'id, 'man, K, S> {
-        VersionArenaWriteGuard { manager: self.manager.read(), _port: self.port.write() }
-    }
-    pub fn alloc(&mut self) -> VersionArenaAllocGuard<'_, 'id, 'man, K, S> {
-        VersionArenaAllocGuard {
-            manager: self.manager.upgradable_read(),
-            _port:   self.port.write(),
-        }
-    }
-}
-impl<'id, 'man, K: Kind, S> VArena<'id, 'man, K, S>
-where
-    S: Default,
-{
-    pub fn new(guard: Guard<'id>, manager_guard: Guard<'man>) -> Self {
-        Self {
-            manager: Arc::new(RwLock::new(UnsafeCell::new(VManager::new(manager_guard)))),
-            port:    Arc::new(RwLock::new(guard.into())),
-        }
-    }
-}
-#[derive(Debug)]
-pub struct VersionArenaReadGuard<'a, 'id, 'man, K: Kind, S> {
-    manager: RwLockReadGuard<'a, ManagerCell<'man, K, S>>,
-    _port:   RwLockReadGuard<'a, Id<'id>>,
-}
-#[derive(Debug)]
-pub struct VersionArenaWriteGuard<'a, 'id, 'man, K: Kind, S> {
-    manager: RwLockReadGuard<'a, ManagerCell<'man, K, S>>,
-    _port:   RwLockWriteGuard<'a, Id<'id>>,
-}
-#[derive(Debug)]
-pub struct VersionArenaAllocGuard<'a, 'id, 'man, K: Kind, S> {
-    manager: RwLockUpgradableReadGuard<'a, ManagerCell<'man, K, S>>,
-    _port:   RwLockWriteGuard<'a, Id<'id>>,
 }
 macro_rules! manager {
     (ref $this:ident) => {
@@ -94,6 +81,49 @@ macro_rules! manager {
             $body
         })
     };
+}
+impl<'id, 'man, K: Kind, S> VArena<'id, 'man, K, S> {
+    pub fn split<'new>(&self, guard: Guard<'new>) -> VArena<'new, 'man, K, S> {
+        VArena { manager: self.manager.clone(), port: Arc::new(RwLock::new(guard.into())) }
+    }
+    pub fn join<'other>(&self, other: VArena<'other, 'man, K, S>) -> HandleMap<'other, 'id> {
+        HandleMap { _from: *other.port.read(), _to: *self.port.read() }
+    }
+    pub fn read(&self) -> VArenaReadGuard<'_, 'id, 'man, K, S> {
+        VArenaReadGuard { manager: self.manager.read(), _port: self.port.read() }
+    }
+    pub fn write(&mut self) -> VArenaWriteGuard<'_, 'id, 'man, K, S> {
+        VArenaWriteGuard { manager: self.manager.read(), _port: self.port.write() }
+    }
+    pub fn alloc(&mut self) -> VArenaAllocGuard<'_, 'id, 'man, K, S> {
+        VArenaAllocGuard { manager: self.manager.upgradable_read(), _port: self.port.write() }
+    }
+}
+impl<'id, 'man, K: Kind, S> VArena<'id, 'man, K, S>
+where
+    S: Default,
+{
+    pub fn new(guard: Guard<'id>, manager_guard: Guard<'man>) -> Self {
+        Self {
+            manager: Arc::new(RwLock::new(UnsafeCell::new(VManager::new(manager_guard)))),
+            port:    Arc::new(RwLock::new(guard.into())),
+        }
+    }
+}
+#[derive(Debug)]
+pub struct VArenaReadGuard<'a, 'id, 'man, K: Kind, S> {
+    manager: RwLockReadGuard<'a, ManagerCell<'man, K, S>>,
+    _port:   RwLockReadGuard<'a, Id<'id>>,
+}
+#[derive(Debug)]
+pub struct VArenaWriteGuard<'a, 'id, 'man, K: Kind, S> {
+    manager: RwLockReadGuard<'a, ManagerCell<'man, K, S>>,
+    _port:   RwLockWriteGuard<'a, Id<'id>>,
+}
+#[derive(Debug)]
+pub struct VArenaAllocGuard<'a, 'id, 'man, K: Kind, S> {
+    manager: RwLockUpgradableReadGuard<'a, ManagerCell<'man, K, S>>,
+    _port:   RwLockWriteGuard<'a, Id<'id>>,
 }
 macro_rules! impl_read {
     ($type:ident) => {
@@ -125,9 +155,9 @@ macro_rules! impl_read {
         }
     };
 }
-impl_read!(VersionArenaReadGuard);
-impl_read!(VersionArenaWriteGuard);
-impl_read!(VersionArenaAllocGuard);
+impl_read!(VArenaReadGuard);
+impl_read!(VArenaWriteGuard);
+impl_read!(VArenaAllocGuard);
 macro_rules! impl_write {
     ($type:ident) => {
         impl<'id, 'man, T, S> $type<'_, 'id, 'man, Typed<T>, S>
@@ -143,6 +173,18 @@ macro_rules! impl_write {
             ) -> Result<[&mut T; N], ArenaError> {
                 Ok(manager!(mut self)
                     .get_disjoint_mut(handles.map(|handle| map_handle!(handle<T> 'id -> 'man)))?)
+            }
+            pub fn move_to<'to, H>(
+                &mut self,
+                _to: &mut VArena<'to, 'man, Typed<T>, S>,
+                target: H::Container<'id>
+            ) -> Result<H::Container<'to>, ArenaError>
+            where
+                H: MappableHandle<Data = T>
+            {
+                let handle = H::handle(&target);
+                let handle = manager!(mut self).bump_version(map_handle!(handle<T> 'id -> 'man))?;
+                Ok(H::update(target, map_handle!(handle<T> 'man -> 'to)))
             }
         }
         impl<'id, 'man, U, S> $type<'_, 'id, 'man, Slices<U>, S>
@@ -160,6 +202,18 @@ macro_rules! impl_write {
                 Ok(manager!(mut self)
                     .get_disjoint_mut(handles.map(|handle| map_handle!(handle<[T]> 'id -> 'man)))?)
             }
+            pub fn move_to<'to, H, T>(
+                &mut self,
+                _to: &mut VArena<'to, 'man, Slices<U>, S>,
+                target: H::Container<'id>
+            ) -> Result<H::Container<'to>, ArenaError>
+            where
+                H: MappableHandle<Data = [T]>
+            {
+                let handle = H::handle(&target);
+                let handle = manager!(mut self).bump_version(map_handle!(handle<[T]> 'id -> 'man))?;
+                Ok(H::update(target, map_handle!(handle<[T]> 'man -> 'to)))
+            }
         }
         impl<'id, 'man, U, S> $type<'_, 'id, 'man, Mixed<U>, S>
         where
@@ -176,21 +230,34 @@ macro_rules! impl_write {
                 Ok(manager!(mut self)
                     .get_disjoint_mut(handles.map(|handle| map_handle!(handle<T> 'id -> 'man)))?)
             }
+            pub fn move_to<'to, H, T>(
+                &mut self,
+                _to: &mut VArena<'to, 'man, Mixed<U>, S>,
+                target: H::Container<'id>
+            ) -> Result<H::Container<'to>, ArenaError>
+            where
+                H: MappableHandle<Data = T>
+            {
+                let handle = H::handle(&target);
+                let handle = manager!(mut self).bump_version(map_handle!(handle<T> 'id -> 'man))?;
+                Ok(H::update(target, map_handle!(handle<T> 'man -> 'to)))
+            }
         }
     };
 }
-impl_write!(VersionArenaWriteGuard);
-impl_write!(VersionArenaAllocGuard);
-impl<T, S> VersionArenaAllocGuard<'_, '_, '_, Typed<T>, S>
+impl_write!(VArenaWriteGuard);
+impl_write!(VArenaAllocGuard);
+impl<K, S> VArenaAllocGuard<'_, '_, '_, K, S>
 where
-    S: Store<(Version, T)>,
+    S: Store<K::VElement>,
+    K: Kind,
 {
     #[rustfmt::skip]
-    pub fn reserve(&mut self, additional: usize) -> Result<(), ArenaError> {
+    pub fn reserve(&mut self, additional: Length) -> Result<(), ArenaError> {
         manager!(lock self |manager| Ok(manager.reserve(additional)?))
     }
 }
-impl<'id, 'man, T, S> VersionArenaAllocGuard<'_, 'id, 'man, Typed<T>, S>
+impl<'id, 'man, T, S> VArenaAllocGuard<'_, 'id, 'man, Typed<T>, S>
 where
     S: Store<(Version, T)>,
 {
@@ -213,7 +280,7 @@ where
         }
     }
 }
-impl<'id, 'man, T, S> VersionArenaAllocGuard<'_, 'id, 'man, Typed<T>, S>
+impl<'id, 'man, T, S> VArenaAllocGuard<'_, 'id, 'man, Typed<T>, S>
 where
     S: ReusableStore<(Version, T)>,
 {
@@ -221,17 +288,7 @@ where
         Ok(manager!(mut self).remove(map_handle!(handle<T> 'id -> 'man))?)
     }
 }
-impl<U, S> VersionArenaAllocGuard<'_, '_, '_, Slices<U>, S>
-where
-    U: RawBytes,
-    S: MultiStore<U>,
-{
-    #[rustfmt::skip]
-    pub fn reserve(&mut self, additional: usize) -> Result<(), ArenaError> {
-        manager!(lock self |manager| Ok(manager.reserve(additional)?))
-    }
-}
-impl<'id, 'man, U, S> VersionArenaAllocGuard<'_, 'id, 'man, Slices<U>, S>
+impl<'id, 'man, U, S> VArenaAllocGuard<'_, 'id, 'man, Slices<U>, S>
 where
     U: RawBytes,
     S: MultiStore<U>,
@@ -256,7 +313,7 @@ where
         }
     }
 }
-impl<'id, 'man, U, S> VersionArenaAllocGuard<'_, 'id, 'man, Slices<U>, S>
+impl<'id, 'man, U, S> VArenaAllocGuard<'_, 'id, 'man, Slices<U>, S>
 where
     U: RawBytes,
     S: ReusableMultiStore<U>,
@@ -268,17 +325,7 @@ where
         Ok(manager!(mut self).remove(map_handle!(handle<[T]> 'id -> 'man))?)
     }
 }
-impl<U, S> VersionArenaAllocGuard<'_, '_, '_, Mixed<U>, S>
-where
-    U: RawBytes,
-    S: MultiStore<U>,
-{
-    #[rustfmt::skip]
-    pub fn reserve(&mut self, additional: usize) -> Result<(), ArenaError> {
-        manager!(lock self |manager| Ok(manager.reserve(additional)?))
-    }
-}
-impl<'id, 'man, U, S> VersionArenaAllocGuard<'_, 'id, 'man, Mixed<U>, S>
+impl<'id, 'man, U, S> VArenaAllocGuard<'_, 'id, 'man, Mixed<U>, S>
 where
     U: RawBytes,
     S: MultiStore<U>,
@@ -302,7 +349,7 @@ where
         }
     }
 }
-impl<'id, 'man, U, S> VersionArenaAllocGuard<'_, 'id, 'man, Mixed<U>, S>
+impl<'id, 'man, U, S> VArenaAllocGuard<'_, 'id, 'man, Mixed<U>, S>
 where
     U: RawBytes,
     S: ReusableMultiStore<U>,

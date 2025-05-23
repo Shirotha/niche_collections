@@ -34,7 +34,7 @@ impl<T> Store<T> for FreelistStore<T> {
         let entry = self
             .data
             .get(index.get() as usize)
-            .ok_or(StoreError::OutOfBounds(index, self.data.len()))?;
+            .ok_or(StoreError::OutOfBounds(index, self.data.len() as Length))?;
         match entry {
             Entry::Occupied(x) => Ok(x),
             Entry::Free(_) => Err(StoreError::AccessAfterFree(index)),
@@ -43,7 +43,7 @@ impl<T> Store<T> for FreelistStore<T> {
 
     fn get_mut(&mut self, index: Index) -> Result<&mut T, StoreError> {
         // HACK: circumvent borrowchecker false positive
-        let len = self.data.len();
+        let len = self.data.len() as Length;
         let entry =
             self.data.get_mut(index.get() as usize).ok_or(StoreError::OutOfBounds(index, len))?;
         match entry {
@@ -109,15 +109,15 @@ impl<T> Store<T> for FreelistStore<T> {
         }
     }
 
-    fn reserve(&mut self, additional: usize) -> Result<(), StoreError> {
-        let len = self.data.len();
+    fn reserve(&mut self, additional: Length) -> Result<(), StoreError> {
+        let len = self.data.len() as Length;
         let min_target =
             len.checked_add(additional).ok_or(StoreError::OutofMemory(additional, len))?;
-        let target = min_target.max(2 * len).min(Index::MAX.get() as usize + 1);
+        let target = min_target.max(2 * len).min(Index::MAX.get() + 1);
         if target < min_target {
             return Err(StoreError::OutofMemory(additional, len));
         }
-        self.data.reserve_exact(target - len);
+        self.data.reserve_exact((target - len) as usize);
         assert!(
             self.data.capacity() <= Index::MAX.get() as usize + 1,
             "capacity exceeds maximum index"
@@ -135,7 +135,7 @@ impl<T> Store<T> for FreelistStore<T> {
 impl<T> ReusableStore<T> for FreelistStore<T> {
     fn remove(&mut self, index: Index) -> Result<T, StoreError> {
         // HACK: circumvent borrowchecker false positive
-        let len = self.data.len();
+        let len = self.data.len() as Length;
         let entry =
             self.data.get_mut(index.get() as usize).ok_or(StoreError::OutOfBounds(index, len))?;
         match entry {

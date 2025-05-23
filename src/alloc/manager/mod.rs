@@ -13,6 +13,7 @@ mod version;
 use thiserror::Error;
 pub use version::*;
 
+use super::*;
 use crate::alloc::store::*;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -24,24 +25,15 @@ pub enum ManagerError {
 }
 
 pub trait Kind {
-    type Stored;
+    type XElement;
+    type VElement;
+
+    type ReuseableStore<E>: ReusableStore<E>;
 }
-pub trait RawBytes: Copy {
-    fn as_usize(self) -> usize;
-    fn from_usize(value: usize) -> Self;
-}
+pub trait RawBytes: Copy {}
 macro_rules! impl_RawBytes {
     ($t:ty) => {
-        impl RawBytes for $t {
-            #[inline(always)]
-            fn as_usize(self) -> usize {
-                self as usize
-            }
-            #[inline(always)]
-            fn from_usize(value: usize) -> Self {
-                value as $t
-            }
-        }
+        impl RawBytes for $t {}
     };
 }
 impl_RawBytes!(u8);
@@ -52,15 +44,24 @@ impl_RawBytes!(u128);
 
 pub struct Typed<T>(PhantomData<T>);
 impl<T> Kind for Typed<T> {
-    type Stored = T;
+    type XElement = T;
+    type VElement = (Version, T);
+
+    type ReuseableStore<E> = FreelistStore<E>;
 }
 pub struct Slices<U>(PhantomData<U>);
 impl<U: RawBytes> Kind for Slices<U> {
-    type Stored = U;
+    type XElement = U;
+    type VElement = U;
+
+    type ReuseableStore<E> = IntervaltreeStore<E>;
 }
 pub struct Mixed<U>(PhantomData<U>);
 impl<U: RawBytes> Kind for Mixed<U> {
-    type Stored = U;
+    type XElement = U;
+    type VElement = U;
+
+    type ReuseableStore<E> = IntervaltreeStore<E>;
 }
 
 #[inline]
@@ -79,11 +80,16 @@ where
     Ok(results.map(|r| unsafe { r.assume_init() }))
 }
 
-pub type Length = u32;
 impl<U: RawBytes> Slices<U> {
     #[inline(always)]
-    pub(super) fn header_size<H>() -> usize {
+    pub(super) fn header_size<H>() -> Length {
         Self::size_of::<(Length, H)>(1)
+    }
+    pub(super) fn header_range<H>(index: Index) -> Result<Range<Index>, StoreError> {
+        let size = Self::header_size::<H>();
+        let end = Index::new(index.get() + size)
+            .ok_or_else(|| StoreError::OutOfBounds(index, index.get()))?;
+        Ok(index..end)
     }
     /// # Safety
     /// `index` has to be a pointer to a valid `H`.
@@ -92,23 +98,22 @@ impl<U: RawBytes> Slices<U> {
         store: &impl MultiStore<U>,
         index: Index,
     ) -> Result<((Length, H), Index), StoreError> {
-        let size = Self::header_size::<H>() as u32;
-        let end = Index::new(index.get() + size)
-            .ok_or_else(|| StoreError::OutOfBounds(index, index.get() as usize))?;
+        let range = Self::header_range::<H>(index)?;
+        let end = range.end;
         // SAFETY: guarantied by caller
         let header =
-            unsafe { read_unaligned(store.get_many(index..end)?.as_ptr() as *const (Length, H)) };
+            unsafe { read_unaligned(store.get_many(range)?.as_ptr() as *const (Length, H)) };
         Ok((header, end))
     }
     #[inline]
-    pub(super) fn size_of<T>(len: Length) -> usize {
-        (size_of::<T>() * len.as_usize()).div_ceil(size_of::<U>())
+    pub(super) fn size_of<T>(len: Length) -> Length {
+        (size_of::<T>() as Length * len).div_ceil(size_of::<U>() as Length)
     }
     #[inline]
     fn range_of<T>(index: Index, len: Length) -> Result<Range<Index>, StoreError> {
-        let size = Self::size_of::<T>(len) as u32;
+        let size = Self::size_of::<T>(len);
         let end = Index::new(index.get() + size)
-            .ok_or_else(|| StoreError::OutOfBounds(index, (index.get() + size - 1) as usize))?;
+            .ok_or_else(|| StoreError::OutOfBounds(index, index.get() + size - 1))?;
         Ok(index..end)
     }
     /// # Safety
@@ -122,7 +127,7 @@ impl<U: RawBytes> Slices<U> {
         let range = Self::range_of::<T>(index, len)?;
         // SAFETY: guarantied by caller
         Ok(unsafe {
-            slice::from_raw_parts(store.get_many(range)?.as_ptr() as *const T, len.as_usize())
+            slice::from_raw_parts(store.get_many(range)?.as_ptr() as *const T, len as usize)
         })
     }
     /// # Safety
@@ -138,7 +143,7 @@ impl<U: RawBytes> Slices<U> {
         Ok(unsafe {
             slice::from_raw_parts_mut(
                 store.get_many_mut(range)?.as_mut_ptr() as *mut T,
-                len.as_usize(),
+                len as usize,
             )
         })
     }
@@ -163,27 +168,29 @@ impl<U: RawBytes> Slices<U> {
         let mut data = unsafe { store.get_many_disjoint_unchecked_mut(ranges) };
         // SAFETY: always valid for data written by `write_slice`
         Ok(array::from_fn(|i| unsafe {
-            slice::from_raw_parts_mut(data[i].as_mut_ptr() as *mut T, headers[i].0.0.as_usize())
+            slice::from_raw_parts_mut(data[i].as_mut_ptr() as *mut T, headers[i].0.0 as usize)
         }))
     }
-    #[inline]
+    fn write_header<H>(
+        len: Length,
+        extra_header: H,
+        dst: &mut [MaybeUninit<U>],
+    ) -> &mut [MaybeUninit<U>] {
+        let header_size = Self::header_size::<H>() as usize;
+        // SAFETY: panics when not enough space
+        unsafe { write_unaligned(dst[0..header_size].as_mut_ptr() as *mut _, (len, extra_header)) };
+        &mut dst[header_size..]
+    }
     /// # Safety
     /// `src` and `dst` have to have compatible sizes and can't overlap.
     // NOTE: T has to be Copy because this cannot consume an unsized [T], so the original might be dropped while also stored here
+    #[inline]
     unsafe fn write_slice<T: Copy, H>(src: &[T], extra_header: H, dst: &mut [MaybeUninit<U>]) {
         assert!(align_of::<U>() >= align_of::<T>(), "incompatible alignment");
-        let header_size = Self::header_size::<H>();
         // SAFETY: guarantied by caller
-        unsafe {
-            write_unaligned(
-                dst[0..header_size].as_mut_ptr() as *mut _,
-                (src.len() as Length, extra_header),
-            )
-        };
+        let dst = Self::write_header(src.len() as Length, extra_header, dst);
         // SAFETY: guarantied by caller
-        unsafe {
-            copy_nonoverlapping(src.as_ptr(), dst[header_size..].as_mut_ptr() as *mut T, src.len())
-        };
+        unsafe { copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr() as *mut T, src.len()) };
     }
     /// # Safety
     /// `index` and `len` are not checked (results of `read_header` are always valid).
@@ -205,15 +212,15 @@ impl<U: RawBytes> Slices<U> {
 }
 impl<U: RawBytes> Mixed<U> {
     #[inline]
-    pub(super) fn size_of<T>() -> usize {
-        size_of::<T>().div_ceil(size_of::<U>())
+    pub(super) fn size_of<T>() -> Length {
+        size_of::<T>().div_ceil(size_of::<U>()) as Length
     }
     #[inline]
     fn range_of<T>(index: Index) -> Result<Range<Index>, StoreError> {
         assert!(align_of::<U>() >= align_of::<T>());
-        let size = Self::size_of::<T>() as u32;
+        let size = Self::size_of::<T>();
         let end = Index::new(index.get() + size)
-            .ok_or_else(|| StoreError::OutOfBounds(index, (index.get() + size - 1) as usize))?;
+            .ok_or_else(|| StoreError::OutOfBounds(index, index.get() + size - 1))?;
         Ok(index..end)
     }
     /// # Safety

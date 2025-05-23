@@ -6,6 +6,8 @@ use std::{
 
 use thiserror::Error;
 
+use super::*;
+
 mod simple;
 pub use simple::*;
 
@@ -15,18 +17,16 @@ pub use freelist::*;
 mod intervaltree;
 pub use intervaltree::*;
 
-pub type Index = nonmax::NonMaxU32;
-
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum StoreError {
     #[error("Tried to access data at index {0} when length was {1}.")]
-    OutOfBounds(Index, usize),
+    OutOfBounds(Index, Length),
     #[error("Tried to access previously freed data at index {0}.")]
     AccessAfterFree(Index),
     #[error("Tried to free already freed data at index {0}.")]
     DoubleFree(Index),
     #[error("Tried to allocate {0} items when length was {1}")]
-    OutofMemory(usize, usize),
+    OutofMemory(Length, Length),
     #[error("Disjoint Error: {0}")]
     DisjointError(#[from] GetDisjointMutError),
 }
@@ -45,7 +45,7 @@ pub trait Store<T> {
         indices: [Index; N],
     ) -> [&mut T; N];
     fn insert_within_capacity(&mut self, data: T) -> Result<Index, T>;
-    fn reserve(&mut self, additional: usize) -> Result<(), StoreError>;
+    fn reserve(&mut self, additional: Length) -> Result<(), StoreError>;
     fn clear(&mut self);
 }
 pub trait ReusableStore<T>: Store<T> {
@@ -111,7 +111,7 @@ pub trait MultiStore<T: Clone>: Store<T> {
     ) -> [&mut [T]; N];
     fn insert_many_within_capacity(
         &mut self,
-        len: usize,
+        len: Length,
     ) -> Option<(Index, BeforeInsertMany<'_, T>)>;
 }
 pub trait ReusableMultiStore<T: Clone>: MultiStore<T> {

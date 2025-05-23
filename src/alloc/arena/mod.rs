@@ -5,6 +5,7 @@ mod version;
 use thiserror::Error;
 pub use version::*;
 
+use super::*;
 use crate::alloc::manager::ManagerError;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
