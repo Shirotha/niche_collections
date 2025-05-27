@@ -58,7 +58,9 @@
         commands = with pkgs'; [
           { package = rust-toolchain; category = "rust"; }
           { package = rustfmt-nightly; category = "rust"; }
+          { package = rusty-man; category = "rust"; }
           { package = mold; category = "build"; }
+          { package = hyperfine; category = "debug"; }
         ];
       });
     });
