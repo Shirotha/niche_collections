@@ -64,7 +64,6 @@ impl<U: RawBytes> Kind for Mixed<U> {
     type ReuseableStore<E> = IntervaltreeStore<E>;
 }
 
-#[inline]
 pub(super) fn map_result<const N: usize, IN, OUT, E, F>(
     srcs: impl IntoIterator<Item = IN>,
     f: F,
@@ -81,7 +80,6 @@ where
 }
 
 impl<U: RawBytes> Slices<U> {
-    #[inline(always)]
     pub(super) fn header_size<H>() -> Length {
         Self::size_of::<(Length, H)>(1)
     }
@@ -93,7 +91,6 @@ impl<U: RawBytes> Slices<U> {
     }
     /// # Safety
     /// `index` has to be a pointer to a valid `H`.
-    #[inline]
     unsafe fn read_header<H>(
         store: &impl MultiStore<U>,
         index: Index,
@@ -105,11 +102,9 @@ impl<U: RawBytes> Slices<U> {
             unsafe { read_unaligned(store.get_many(range)?.as_ptr() as *const (Length, H)) };
         Ok((header, end))
     }
-    #[inline]
     pub(super) fn size_of<T>(len: Length) -> Length {
         (size_of::<T>() as Length * len).div_ceil(size_of::<U>() as Length)
     }
-    #[inline]
     fn range_of<T>(index: Index, len: Length) -> Result<Range<Index>, StoreError> {
         let size = Self::size_of::<T>(len);
         let end = Index::new(index.get() + size)
@@ -118,7 +113,6 @@ impl<U: RawBytes> Slices<U> {
     }
     /// # Safety
     /// `index` and `len` are not checked (results of `read_header` are always valid).
-    #[inline]
     unsafe fn get_slice<T>(
         store: &impl MultiStore<U>,
         index: Index,
@@ -132,7 +126,6 @@ impl<U: RawBytes> Slices<U> {
     }
     /// # Safety
     /// `index` and `len` are not checked (results of `read_header` are always valid).
-    #[inline]
     unsafe fn get_slice_mut<T>(
         store: &mut impl MultiStore<U>,
         index: Index,
@@ -149,7 +142,6 @@ impl<U: RawBytes> Slices<U> {
     }
     /// # Safety
     /// Does not check if `indices` are valid and distinct.
-    #[inline]
     unsafe fn get_disjoint_mut<const N: usize, T, H, E>(
         store: &mut impl MultiStore<U>,
         indices: [Index; N],
@@ -184,7 +176,6 @@ impl<U: RawBytes> Slices<U> {
     /// # Safety
     /// `src` and `dst` have to have compatible sizes and can't overlap.
     // NOTE: T has to be Copy because this cannot consume an unsized [T], so the original might be dropped while also stored here
-    #[inline]
     unsafe fn write_slice<T: Copy, H>(src: &[T], extra_header: H, dst: &mut [MaybeUninit<U>]) {
         assert!(align_of::<U>() >= align_of::<T>(), "incompatible alignment");
         // SAFETY: guarantied by caller
@@ -194,7 +185,6 @@ impl<U: RawBytes> Slices<U> {
     }
     /// # Safety
     /// `index` and `len` are not checked (results of `read_header` are always valid).
-    #[inline]
     unsafe fn delete_slice<'a, T: Copy>(
         store: &'a mut impl ReusableMultiStore<U>,
         index: Index,
@@ -211,11 +201,9 @@ impl<U: RawBytes> Slices<U> {
     }
 }
 impl<U: RawBytes> Mixed<U> {
-    #[inline]
     pub(super) fn size_of<T>() -> Length {
         size_of::<T>().div_ceil(size_of::<U>()) as Length
     }
-    #[inline]
     fn range_of<T>(index: Index) -> Result<Range<Index>, StoreError> {
         assert!(align_of::<U>() >= align_of::<T>());
         let size = Self::size_of::<T>();
@@ -225,7 +213,6 @@ impl<U: RawBytes> Mixed<U> {
     }
     /// # Safety
     /// `index` has to be a valid pointer to a T.
-    #[inline]
     unsafe fn get_instance<T>(store: &impl MultiStore<U>, index: Index) -> Result<&T, StoreError> {
         let range = Self::range_of::<T>(index)?;
         // SAFETY: guarnatied by caller
@@ -233,7 +220,6 @@ impl<U: RawBytes> Mixed<U> {
     }
     /// # Safety
     /// `index` has to be a valid pointer to a T.
-    #[inline]
     unsafe fn get_instance_mut<T>(
         store: &mut impl MultiStore<U>,
         index: Index,
@@ -244,7 +230,6 @@ impl<U: RawBytes> Mixed<U> {
     }
     /// # Safety
     /// Does not check if `indices` are valid or distinct.
-    #[inline]
     unsafe fn get_disjoint_unchecked_mut<const N: usize, T>(
         store: &mut impl MultiStore<U>,
         indices: [Index; N],
@@ -257,7 +242,6 @@ impl<U: RawBytes> Mixed<U> {
     }
     /// # Safety
     /// Does not check if `indices` are valid.
-    #[inline]
     unsafe fn get_disjoint_mut<const N: usize, T>(
         store: &mut impl MultiStore<U>,
         indices: [Index; N],
@@ -267,7 +251,6 @@ impl<U: RawBytes> Mixed<U> {
         // SAFETY: always valid for data written by `write_instance`
         Ok(data.map(|d| unsafe { &mut *(d.as_mut_ptr() as *mut T) }))
     }
-    #[inline]
     /// # Safety
     /// `src` and `dst` have to have compatible sizes and can't overlap.
     unsafe fn write_instance<T>(src: T, dst: &mut [MaybeUninit<U>]) {
@@ -278,7 +261,6 @@ impl<U: RawBytes> Mixed<U> {
     }
     /// # Safety
     /// `index` has to be a valid pointer to a T.
-    #[inline]
     unsafe fn delete_instance<T>(
         store: &mut impl ReusableMultiStore<U>,
         index: Index,

@@ -11,10 +11,10 @@ edition = "2024"
 
 
 [package]
-name = "handling-arena"
+name = "niche_collections"
 authors.workspace = true
-description = "arena allocator that uses typed handles instead of indices"
-repository = "https://github.com/Shirotha/handling-arena"
+description = "Collection of specialized data types"
+repository = "https://github.com/Shirotha/niche_collections"
 version.workspace = true
 edition.workspace = true
 

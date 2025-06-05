@@ -197,7 +197,6 @@ where
         }
     }
 }
-
 #[cfg(any(test, doctest))]
 mod test {
     use generativity::make_guard;
@@ -206,11 +205,17 @@ mod test {
 
     /// Handles can only be used in the manager that created them.
     /// ```compile_fail
+    /// use generativity::make_guard;
+    /// use niche_collections::alloc::{
+    ///     manager::{Typed, XManager},
+    ///     store::FreelistStore,
+    /// };
+    ///
     /// make_guard!(guard);
     /// let managerB = XManager::<Typed<bool>, FreelistStore<bool>>::new(guard);
     /// make_guard!(guard);
     /// let mut managerA = XManager::<Typed<bool>, FreelistStore<bool>>::new(guard);
-    /// managerA.reserve(1)?;
+    /// managerA.reserve(1).unwrap();
     /// let handle = managerA.insert_within_capacity(true).unwrap();
     /// let val = managerB.get(&handle).unwrap();
     /// ```
