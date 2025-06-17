@@ -17,22 +17,20 @@ impl<T> Default for SimpleStore<T> {
         Self { data: Vec::new() }
     }
 }
-impl<T> Store<T> for SimpleStore<T> {
-    fn get(&self, index: Index) -> Result<&T, StoreError> {
+impl<T> Get<Single<T>> for SimpleStore<T> {
+    fn get(&self, index: Index) -> SResult<&T> {
         self.data
             .get(index.get() as usize)
             .ok_or(StoreError::OutOfBounds(index, self.data.len() as Length))
     }
 
-    fn get_mut(&mut self, index: Index) -> Result<&mut T, StoreError> {
+    fn get_mut(&mut self, index: Index) -> SResult<&mut T> {
         let len = self.data.len() as Length;
         self.data.get_mut(index.get() as usize).ok_or(StoreError::OutOfBounds(index, len))
     }
-
-    fn get_disjoint_mut<const N: usize>(
-        &mut self,
-        indices: [Index; N],
-    ) -> Result<[&mut T; N], StoreError> {
+}
+impl<T> GetDisjointMut<Single<T>> for SimpleStore<T> {
+    fn get_disjoint_mut<const N: usize>(&mut self, indices: [Index; N]) -> SResult<[&mut T; N]> {
         self.data.get_disjoint_mut(indices.map(|i| i.get() as usize)).map_err(StoreError::from)
     }
 
@@ -43,7 +41,8 @@ impl<T> Store<T> for SimpleStore<T> {
         // SAFETY: assumptions guarantied by caller
         unsafe { self.data.get_disjoint_unchecked_mut(indices.map(|i| i.get() as usize)) }
     }
-
+}
+impl<T> Insert<Single<T>> for SimpleStore<T> {
     fn insert_within_capacity(&mut self, data: T) -> Result<Index, T> {
         let index = self.data.len();
         if index == self.data.capacity() {
@@ -53,14 +52,21 @@ impl<T> Store<T> for SimpleStore<T> {
         // SAFETY: all indices within capacity are valid
         Ok(unsafe { Index::new_unchecked(index as u32) })
     }
+}
+impl<T> Resizable for SimpleStore<T> {
+    fn len(&self) -> Length {
+        self.data.len() as Length
+    }
 
-    fn reserve(&mut self, additional: Length) -> Result<(), StoreError> {
+    fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    fn widen(&mut self, new_len: Length) -> SResult<()> {
         let len = self.data.len() as Length;
-        let min_target =
-            len.checked_add(additional).ok_or(StoreError::OutofMemory(additional, len))?;
-        let target = min_target.max(2 * len).min(Index::MAX.get() + 1);
-        if target < min_target {
-            return Err(StoreError::OutofMemory(additional, len));
+        let target = new_len.max(2 * len).min(Index::MAX.get() + 1);
+        if target < new_len {
+            return Err(StoreError::OutofMemory(len, new_len));
         }
         self.data.reserve_exact((target - len) as usize);
         assert!(
@@ -75,9 +81,10 @@ impl<T> Store<T> for SimpleStore<T> {
         self.data.clear();
     }
 }
+impl<T> Store<T> for SimpleStore<T> {}
 
-impl<T: Clone> MultiStore<T> for SimpleStore<T> {
-    fn get_many(&self, index: Range<Index>) -> Result<&[T], StoreError> {
+impl<T> Get<Multi<T>> for SimpleStore<T> {
+    fn get(&self, index: Range<Index>) -> SResult<&[T]> {
         let a = index.start.get();
         let b = index.end.get();
         self.data
@@ -85,24 +92,25 @@ impl<T: Clone> MultiStore<T> for SimpleStore<T> {
             .ok_or(StoreError::OutOfBounds(index.start, b.saturating_sub(a)))
     }
 
-    fn get_many_mut(&mut self, index: Range<Index>) -> Result<&mut [T], StoreError> {
+    fn get_mut(&mut self, index: Range<Index>) -> SResult<&mut [T]> {
         let a = index.start.get();
         let b = index.end.get();
         self.data
             .get_mut(a as usize..b as usize)
             .ok_or(StoreError::OutOfBounds(index.start, b.saturating_sub(a)))
     }
-
-    fn get_many_disjoint_mut<const N: usize>(
+}
+impl<T> GetDisjointMut<Multi<T>> for SimpleStore<T> {
+    fn get_disjoint_mut<const N: usize>(
         &mut self,
         indices: [Range<Index>; N],
-    ) -> Result<[&mut [T]; N], StoreError> {
+    ) -> SResult<[&mut [T]; N]> {
         self.data
             .get_disjoint_mut(indices.map(|i| i.start.get() as usize..i.end.get() as usize))
             .map_err(StoreError::from)
     }
 
-    unsafe fn get_many_disjoint_unchecked_mut<const N: usize>(
+    unsafe fn get_disjoint_unchecked_mut<const N: usize>(
         &mut self,
         indices: [Range<Index>; N],
     ) -> [&mut [T]; N] {
@@ -113,17 +121,26 @@ impl<T: Clone> MultiStore<T> for SimpleStore<T> {
             )
         }
     }
+}
+impl<T> InsertIndirect<Multi<T>> for SimpleStore<T> {
+    type Guard<'a>
+        = InsertIndirectGuard<'a, T>
+    where
+        Self: 'a;
 
-    fn insert_many_within_capacity(
+    fn insert_indirect_within_capacity(
         &mut self,
         len: Length,
-    ) -> Option<(Index, BeforeInsertMany<'_, T>)> {
+    ) -> Option<(Range<Index>, InsertIndirectGuard<'_, T>)> {
         let len = len as usize;
         if self.data.len() + len > self.data.capacity() {
             return None;
         }
         // SAFETY: all indices within capacity are valid
-        let index = unsafe { Index::new_unchecked(self.data.len() as u32) };
-        Some((index, BeforeInsertMany { data: &mut self.data, len }))
+        let begin = unsafe { Index::new_unchecked(self.data.len() as u32) };
+        // SAFETY: all indices within capacity are valid
+        let end = unsafe { Index::new_unchecked((self.data.len() + len) as u32) };
+        Some((begin..end, InsertIndirectGuard { data: &mut self.data, len }))
     }
 }
+impl<T> MultiStore<T> for SimpleStore<T> {}

@@ -29,10 +29,13 @@ where
 impl<K, S> XManager<'_, K, S>
 where
     K: Kind,
-    S: Store<K::XElement>,
+    S: Resizable,
 {
-    pub fn reserve(&mut self, additional: Length) -> Result<(), ManagerError> {
-        Ok(self.store.reserve(additional)?)
+    pub fn reserve(&mut self, additional: Length) -> MResult<()> {
+        let new_len = self.store.len().checked_add(additional).ok_or_else(|| {
+            StoreError::OutofMemory(self.store.len(), self.store.len() + additional)
+        })?;
+        Ok(self.store.widen(new_len)?)
     }
     /// This will not drop existing items and might cause a memory leak
     /// # Safety
@@ -51,18 +54,11 @@ impl<'id, T, S> XManager<'id, Typed<T>, S>
 where
     S: Store<T>,
 {
-    pub fn get(&self, handle: &XHandle<'id, T>) -> Result<&T, ManagerError> {
+    pub fn get(&self, handle: &XHandle<'id, T>) -> MResult<&T> {
         Ok(self.store.get(handle.index)?)
     }
-    pub fn get_mut(&mut self, handle: &mut XHandle<'id, T>) -> Result<&mut T, ManagerError> {
+    pub fn get_mut(&mut self, handle: &mut XHandle<'id, T>) -> MResult<&mut T> {
         Ok(self.store.get_mut(handle.index)?)
-    }
-    pub fn get_disjoint_mut<const N: usize>(
-        &mut self,
-        handles: [&mut XHandle<'id, T>; N],
-    ) -> [&mut T; N] {
-        // SAFETY: exclusive handles are disjoint by definition
-        unsafe { self.store.get_disjoint_unchecked_mut(handles.map(|handle| handle.index)) }
     }
     pub fn insert_within_capacity(&mut self, data: T) -> Result<XHandle<'id, T>, T> {
         self.store.insert_within_capacity(data).map(|index| XHandle {
@@ -70,6 +66,18 @@ where
             _manager: self.id,
             _marker: PhantomData,
         })
+    }
+}
+impl<'id, T, S> XManager<'id, Typed<T>, S>
+where
+    S: Store<T> + GetDisjointMut<Single<T>>,
+{
+    pub fn get_disjoint_mut<const N: usize>(
+        &mut self,
+        handles: [&mut XHandle<'id, T>; N],
+    ) -> [&mut T; N] {
+        // SAFETY: exclusive handles are disjoint by definition
+        unsafe { self.store.get_disjoint_unchecked_mut(handles.map(|handle| handle.index)) }
     }
 }
 impl<'id, T, S> XManager<'id, Typed<T>, S>
@@ -88,44 +96,50 @@ where
     U: RawBytes,
     S: MultiStore<U>,
 {
-    pub fn len<T>(&self, handle: &XHandle<'id, [T]>) -> Result<Length, ManagerError> {
+    pub fn len<T>(&self, handle: &XHandle<'id, [T]>) -> MResult<Length> {
         // SAFETY: handle is always valid
         Ok(unsafe { Slices::<U>::read_header::<()>(&self.store, handle.index)?.0.0 })
     }
-    pub fn get<T>(&self, handle: &XHandle<'id, [T]>) -> Result<&[T], ManagerError> {
+    pub fn get<T>(&self, handle: &XHandle<'id, [T]>) -> MResult<&[T]> {
         // SAFETY: handle is always valid
         let ((len, _), index) =
             unsafe { Slices::<U>::read_header::<()>(&self.store, handle.index)? };
         // SAFETY: results of get_length are always valid
         Ok(unsafe { Slices::get_slice(&self.store, index, len)? })
     }
-    pub fn get_mut<T>(&mut self, handle: &mut XHandle<'id, [T]>) -> Result<&mut [T], ManagerError> {
+    pub fn get_mut<T>(&mut self, handle: &mut XHandle<'id, [T]>) -> MResult<&mut [T]> {
         // SAFETY: handle is always valid
         let ((len, _), index) =
             unsafe { Slices::<U>::read_header::<()>(&self.store, handle.index)? };
         // SAFETY: results of get_length are always valid
         Ok(unsafe { Slices::get_slice_mut(&mut self.store, index, len)? })
     }
+    pub fn insert_within_capacity<T: Copy>(&mut self, data: &[T]) -> Option<XHandle<'id, [T]>> {
+        let size =
+            Slices::<U>::header_size::<()>() + Slices::<U>::size_of::<T>(data.len() as Length);
+        let (index, mut lock) = self.store.insert_indirect_within_capacity(size)?;
+        // SAFETY: insert_many_* always returns a valid target
+        unsafe { Slices::write_slice(data, (), lock.as_mut()) };
+        Some(XHandle { index: index.start, _manager: self.id, _marker: PhantomData })
+    }
+}
+impl<'id, U, S> XManager<'id, Slices<U>, S>
+where
+    U: RawBytes,
+    S: MultiStore<U> + GetDisjointMut<Multi<U>>,
+{
     pub fn get_disjoint_mut<const N: usize, T>(
         &mut self,
         handles: [&mut XHandle<'id, [T]>; N],
-    ) -> Result<[&mut [T]; N], ManagerError> {
+    ) -> MResult<[&mut [T]; N]> {
         // SAFETY: exclusive handles are always distinct
         Ok(unsafe {
             Slices::get_disjoint_mut(
                 &mut self.store,
                 handles.map(|handle| handle.index),
-                |_: &[((Length, ()), Index)]| Ok::<(), ManagerError>(()),
+                |_: &[((Length, ()), Index)]| Ok::<_, ManagerError>(()),
             )?
         })
-    }
-    pub fn insert_within_capacity<T: Copy>(&mut self, data: &[T]) -> Option<XHandle<'id, [T]>> {
-        let size =
-            Slices::<U>::header_size::<()>() + Slices::<U>::size_of::<T>(data.len() as Length);
-        let (index, mut lock) = self.store.insert_many_within_capacity(size)?;
-        // SAFETY: insert_many_* always returns a valid target
-        unsafe { Slices::write_slice(data, (), lock.get_mut()) };
-        Some(XHandle { index, _manager: self.id, _marker: PhantomData })
     }
 }
 impl<'id, U: RawBytes, S> XManager<'id, Slices<U>, S>
@@ -136,12 +150,12 @@ where
     pub fn remove<T: Copy>(
         &mut self,
         handle: XHandle<'id, [T]>,
-    ) -> Result<BeforeRemoveMany<'_, T, impl FnOnce()>, (XHandle<'id, [T]>, ManagerError)> {
+    ) -> Result<<S as RemoveIndirect<Multi<U>>>::Guard<'_>, (XHandle<'id, [T]>, ManagerError)> {
         // SAFETY: handle is always valid
         match unsafe { Slices::<U>::read_header::<()>(&self.store, handle.index) } {
             // SAFETY: result of `read_header` is always valid
             Ok(((len, _), index)) => unsafe {
-                Slices::<U>::delete_slice(&mut self.store, index, len)
+                Slices::<U>::delete_slice::<T, S>(&mut self.store, index, len)
                     .map_err(|err| (handle, err.into()))
             },
             Err(err) => Err((handle, err.into())),
@@ -153,33 +167,39 @@ where
     U: RawBytes,
     S: MultiStore<U>,
 {
-    pub fn get<T>(&self, handle: &XHandle<'id, T>) -> Result<&T, ManagerError> {
+    pub fn get<T>(&self, handle: &XHandle<'id, T>) -> MResult<&T> {
         // SAFETY: handle is always valid
         Ok(unsafe { Mixed::get_instance(&self.store, handle.index)? })
     }
-    pub fn get_mut<T>(&mut self, handle: &mut XHandle<'id, T>) -> Result<&mut T, ManagerError> {
+    pub fn get_mut<T>(&mut self, handle: &mut XHandle<'id, T>) -> MResult<&mut T> {
         // SAFETY: handle is always valid
         Ok(unsafe { Mixed::get_instance_mut(&mut self.store, handle.index)? })
     }
+    pub fn insert_within_capacity<T>(&mut self, data: T) -> Result<XHandle<'id, T>, T> {
+        let size = Mixed::<U>::size_of::<T>();
+        match self.store.insert_indirect_within_capacity(size) {
+            Some((index, mut lock)) => {
+                // SAFETY: insert_many_* always returns a valid target
+                unsafe { Mixed::write_instance(data, lock.as_mut()) };
+                Ok(XHandle { index: index.start, _manager: self.id, _marker: PhantomData })
+            },
+            None => Err(data),
+        }
+    }
+}
+impl<'id, U, S> XManager<'id, Mixed<U>, S>
+where
+    U: RawBytes,
+    S: MultiStore<U> + GetDisjointMut<Multi<U>>,
+{
     pub fn get_disjoint_mut<const N: usize, T>(
         &mut self,
         handles: [&mut XHandle<'id, T>; N],
-    ) -> Result<[&mut T; N], ManagerError> {
+    ) -> MResult<[&mut T; N]> {
         // SAFETY: exclusive handles are always distinct
         Ok(unsafe {
             Mixed::get_disjoint_unchecked_mut(&mut self.store, handles.map(|handle| handle.index))?
         })
-    }
-    pub fn insert_within_capacity<T>(&mut self, data: T) -> Result<XHandle<'id, T>, T> {
-        let size = Mixed::<U>::size_of::<T>();
-        match self.store.insert_many_within_capacity(size) {
-            Some((index, mut lock)) => {
-                // SAFETY: insert_many_* always returns a valid target
-                unsafe { Mixed::write_instance(data, lock.get_mut()) };
-                Ok(XHandle { index, _manager: self.id, _marker: PhantomData })
-            },
-            None => Err(data),
-        }
     }
 }
 impl<'id, U: RawBytes, S> XManager<'id, Mixed<U>, S>

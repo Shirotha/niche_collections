@@ -50,7 +50,7 @@ macro_rules! impl_read {
             S: Store<(Version, T)>,
             H: Header,
         {
-            pub fn get(&self, handle: VHandle<'id, T>) -> Result<&T, ArenaError> {
+            pub fn get(&self, handle: VHandle<'id, T>) -> AResult<&T> {
                 Ok(manager!(ref self).get(map_handle!(handle<T> 'id -> 'man))?)
             }
         }
@@ -60,7 +60,7 @@ macro_rules! impl_read {
             S: MultiStore<U>,
             H: Header,
         {
-            pub fn get<T>(&self, handle: VHandle<'id, [T]>) -> Result<&[T], ArenaError> {
+            pub fn get<T>(&self, handle: VHandle<'id, [T]>) -> AResult<&[T]> {
                 Ok(manager!(ref self).get(map_handle!(handle<[T]> 'id -> 'man))?)
             }
         }
@@ -70,7 +70,7 @@ macro_rules! impl_read {
             S: MultiStore<U>,
             H : Header,
         {
-            pub fn get<T>(&self, handle: VHandle<'id, T>) -> Result<&T, ArenaError> {
+            pub fn get<T>(&self, handle: VHandle<'id, T>) -> AResult<&T> {
                 Ok(manager!(ref self).get(map_handle!(handle<T> 'id -> 'man))?)
             }
         }
@@ -96,27 +96,33 @@ macro_rules! impl_write {
             S: Store<(Version, T)>,
             H: Header,
         {
-            pub fn get_mut(&mut self, handle: VHandle<'id, T>) -> Result<&mut T, ArenaError> {
+            pub fn get_mut(&mut self, handle: VHandle<'id, T>) -> AResult<&mut T> {
                 Ok(manager!(mut self).get_mut(map_handle!(handle<T> 'id -> 'man))?)
-            }
-            pub fn get_disjoint_mut<const N: usize>(
-                &mut self,
-                handles: [VHandle<'id, T>; N],
-            ) -> Result<[&mut T; N], ArenaError> {
-                Ok(manager!(mut self)
-                    .get_disjoint_mut(handles.map(|handle| map_handle!(handle<T> 'id -> 'man)))?)
             }
             pub fn move_to<'to, M>(
                 &mut self,
                 _to: &mut VArena<'to, 'man, Typed<T>, S, H>,
                 target: M::Container<'id>
-            ) -> Result<M::Container<'to>, ArenaError>
+            ) -> AResult<M::Container<'to>>
             where
                 M: MappableHandle<Data = T>
             {
                 let handle = M::handle(&target);
                 let handle = manager!(mut self).bump_version(map_handle!(handle<T> 'id -> 'man))?;
                 Ok(M::update(target, map_handle!(handle<T> 'man -> 'to)))
+            }
+        }
+        impl<'id, 'man, T, S, H> $type<'_, 'id, 'man, Typed<T>, S, H>
+        where
+            S: Store<(Version, T)> + GetDisjointMut<Single<(Version, T)>>,
+            H: Header,
+        {
+            pub fn get_disjoint_mut<const N: usize>(
+                &mut self,
+                handles: [VHandle<'id, T>; N],
+            ) -> AResult<[&mut T; N]> {
+                Ok(manager!(mut self)
+                    .get_disjoint_mut(handles.map(|handle| map_handle!(handle<T> 'id -> 'man)))?)
             }
         }
         impl<'id, 'man, U, S, H> $type<'_, 'id, 'man, Slices<U>, S, H>
@@ -125,21 +131,14 @@ macro_rules! impl_write {
             S: MultiStore<U>,
             H: Header,
         {
-            pub fn get_mut<T>(&mut self, handle: VHandle<'id, [T]>) -> Result<&mut [T], ArenaError> {
+            pub fn get_mut<T>(&mut self, handle: VHandle<'id, [T]>) -> AResult<&mut [T]> {
                 Ok(manager!(mut self).get_mut(map_handle!(handle<[T]> 'id -> 'man))?)
-            }
-            pub fn get_disjoint_mut<const N: usize, T>(
-                &mut self,
-                handles: [VHandle<'id, [T]>; N],
-            ) -> Result<[&mut [T]; N], ArenaError> {
-                Ok(manager!(mut self)
-                    .get_disjoint_mut(handles.map(|handle| map_handle!(handle<[T]> 'id -> 'man)))?)
             }
             pub fn move_to<'to, M, T>(
                 &mut self,
                 _to: &mut VArena<'to, 'man, Slices<U>, S, H>,
                 target: M::Container<'id>
-            ) -> Result<M::Container<'to>, ArenaError>
+            ) -> AResult<M::Container<'to>>
             where
                 M: MappableHandle<Data = [T]>
             {
@@ -148,27 +147,34 @@ macro_rules! impl_write {
                 Ok(M::update(target, map_handle!(handle<[T]> 'man -> 'to)))
             }
         }
+        impl<'id, 'man, U, S, H> $type<'_, 'id, 'man, Slices<U>, S, H>
+        where
+            U: RawBytes,
+            S: MultiStore<U> + GetDisjointMut<Multi<U>>,
+            H: Header,
+        {
+            pub fn get_disjoint_mut<const N: usize, T>(
+                &mut self,
+                handles: [VHandle<'id, [T]>; N],
+            ) -> AResult<[&mut [T]; N]> {
+                Ok(manager!(mut self)
+                    .get_disjoint_mut(handles.map(|handle| map_handle!(handle<[T]> 'id -> 'man)))?)
+            }
+        }
         impl<'id, 'man, U, S, H> $type<'_, 'id, 'man, Mixed<U>, S, H>
         where
             U: RawBytes,
             S: MultiStore<U>,
             H: Header,
         {
-            pub fn get_mut<T>(&mut self, handle: VHandle<'id, T>) -> Result<&mut T, ArenaError> {
+            pub fn get_mut<T>(&mut self, handle: VHandle<'id, T>) -> AResult<&mut T> {
                 Ok(manager!(mut self).get_mut(map_handle!(handle<T> 'id -> 'man))?)
-            }
-            pub fn get_disjoint_mut<const N: usize, T>(
-                &mut self,
-                handles: [VHandle<'id, T>; N],
-            ) -> Result<[&mut T; N], ArenaError> {
-                Ok(manager!(mut self)
-                    .get_disjoint_mut(handles.map(|handle| map_handle!(handle<T> 'id -> 'man)))?)
             }
             pub fn move_to<'to, M, T>(
                 &mut self,
                 _to: &mut VArena<'to, 'man, Mixed<U>, S, H>,
                 target: M::Container<'id>
-            ) -> Result<M::Container<'to>, ArenaError>
+            ) -> AResult<M::Container<'to>>
             where
                 M: MappableHandle<Data = T>
             {
@@ -177,18 +183,32 @@ macro_rules! impl_write {
                 Ok(M::update(target, map_handle!(handle<T> 'man -> 'to)))
             }
         }
+        impl<'id, 'man, U, S, H> $type<'_, 'id, 'man, Mixed<U>, S, H>
+        where
+            U: RawBytes,
+            S: MultiStore<U> + GetDisjointMut<Multi<U>>,
+            H: Header,
+        {
+            pub fn get_disjoint_mut<const N: usize, T>(
+                &mut self,
+                handles: [VHandle<'id, T>; N],
+            ) -> AResult<[&mut T; N]> {
+                Ok(manager!(mut self)
+                    .get_disjoint_mut(handles.map(|handle| map_handle!(handle<T> 'id -> 'man)))?)
+            }
+        }
     };
 }
 impl_write!(VArenaWriteGuard);
 impl_write!(VArenaAllocGuard);
 impl<'a, 'id, 'man, K, S, H> VArenaAllocGuard<'a, 'id, 'man, K, S, H>
 where
-    S: Store<K::VElement>,
+    S: Resizable,
     K: Kind,
     H: Header,
 {
     #[rustfmt::skip]
-    pub fn reserve(&mut self, additional: Length) -> Result<(), ArenaError> {
+    pub fn reserve(&mut self, additional: Length) -> AResult<()> {
         manager!(lock self |manager| Ok(manager.reserve(additional)?))
     }
     pub fn downgrade(self) -> VArenaWriteGuard<'a, 'id, 'man, K, S, H> {
@@ -227,7 +247,7 @@ where
     S: ReusableStore<(Version, T)>,
     H: Header,
 {
-    pub fn remove(&mut self, handle: VHandle<'id, T>) -> Result<T, ArenaError> {
+    pub fn remove(&mut self, handle: VHandle<'id, T>) -> AResult<T> {
         Ok(manager!(mut self).remove(map_handle!(handle<T> 'id -> 'man))?)
     }
 }
@@ -241,7 +261,7 @@ where
         let handle = manager!(mut self).insert_within_capacity(data)?;
         Some(map_handle!(handle<[T]> 'man -> 'id))
     }
-    pub fn insert<T: Copy>(&mut self, data: &[T]) -> Result<VHandle<'id, [T]>, ArenaError> {
+    pub fn insert<T: Copy>(&mut self, data: &[T]) -> AResult<VHandle<'id, [T]>> {
         match self.insert_within_capacity(data) {
             Some(handle) => Ok(handle),
             None => {
@@ -266,7 +286,7 @@ where
     pub fn remove<T: Copy>(
         &mut self,
         handle: VHandle<'id, [T]>,
-    ) -> Result<BeforeRemoveMany<'_, T, impl FnOnce()>, ArenaError> {
+    ) -> AResult<<S as RemoveIndirect<Multi<U>>>::Guard<'_>> {
         Ok(manager!(mut self).remove(map_handle!(handle<[T]> 'id -> 'man))?)
     }
 }
@@ -301,7 +321,7 @@ where
     S: ReusableMultiStore<U>,
     H: Header,
 {
-    pub fn remove<T>(&mut self, handle: VHandle<'id, T>) -> Result<T, ArenaError> {
+    pub fn remove<T>(&mut self, handle: VHandle<'id, T>) -> AResult<T> {
         Ok(manager!(mut self).remove(map_handle!(handle<T> 'id -> 'man))?)
     }
 }

@@ -23,12 +23,14 @@ pub enum ManagerError {
     #[error("bad handle {0}")]
     BadHandle(&'static str),
 }
+pub type MResult<T> = Result<T, ManagerError>;
 
 pub trait Kind {
     type XElement;
     type VElement;
 
-    type ReuseableStore<E>: ReusableStore<E>;
+    type SimpleStore<E>;
+    type ReuseableStore<E>;
 }
 pub trait RawBytes: Copy {}
 macro_rules! impl_RawBytes {
@@ -47,6 +49,7 @@ impl<T> Kind for Typed<T> {
     type XElement = T;
     type VElement = (Version, T);
 
+    type SimpleStore<E> = SimpleStore<E>;
     type ReuseableStore<E> = FreelistStore<E>;
 }
 pub struct Slices<U>(PhantomData<U>);
@@ -54,6 +57,7 @@ impl<U: RawBytes> Kind for Slices<U> {
     type XElement = U;
     type VElement = U;
 
+    type SimpleStore<E> = SimpleStore<E>;
     type ReuseableStore<E> = IntervaltreeStore<E>;
 }
 pub struct Mixed<U>(PhantomData<U>);
@@ -61,7 +65,19 @@ impl<U: RawBytes> Kind for Mixed<U> {
     type XElement = U;
     type VElement = U;
 
+    type SimpleStore<E> = SimpleStore<E>;
     type ReuseableStore<E> = IntervaltreeStore<E>;
+}
+// TODO: implement manager and arena for this
+pub struct SoA<T>(PhantomData<T>);
+impl<T: Maskable> Kind for SoA<T> {
+    type XElement = T;
+    type VElement = Prefix<Version, T>;
+
+    // TODO: impl SimpleMaskedStore that uses a MultiStore as a backing buffer
+    type SimpleStore<E> = SimpleStore<E>;
+    // TODO: impl MaskedFreelistStore that uses an Entry for the first element and plain data for the rest
+    type ReuseableStore<E> = FreelistStore<E>;
 }
 
 pub(super) fn map_result<const N: usize, IN, OUT, E, F>(
@@ -83,7 +99,7 @@ impl<U: RawBytes> Slices<U> {
     pub(super) fn header_size<H>() -> Length {
         Self::size_of::<(Length, H)>(1)
     }
-    pub(super) fn header_range<H>(index: Index) -> Result<Range<Index>, StoreError> {
+    pub(super) fn header_range<H>(index: Index) -> SResult<Range<Index>> {
         let size = Self::header_size::<H>();
         let end = Index::new(index.get() + size)
             .ok_or_else(|| StoreError::OutOfBounds(index, index.get()))?;
@@ -94,18 +110,17 @@ impl<U: RawBytes> Slices<U> {
     unsafe fn read_header<H>(
         store: &impl MultiStore<U>,
         index: Index,
-    ) -> Result<((Length, H), Index), StoreError> {
+    ) -> SResult<((Length, H), Index)> {
         let range = Self::header_range::<H>(index)?;
         let end = range.end;
         // SAFETY: guarantied by caller
-        let header =
-            unsafe { read_unaligned(store.get_many(range)?.as_ptr() as *const (Length, H)) };
+        let header = unsafe { read_unaligned(store.get(range)?.as_ptr() as *const (Length, H)) };
         Ok((header, end))
     }
     pub(super) fn size_of<T>(len: Length) -> Length {
         (size_of::<T>() as Length * len).div_ceil(size_of::<U>() as Length)
     }
-    fn range_of<T>(index: Index, len: Length) -> Result<Range<Index>, StoreError> {
+    fn range_of<T>(index: Index, len: Length) -> SResult<Range<Index>> {
         let size = Self::size_of::<T>(len);
         let end = Index::new(index.get() + size)
             .ok_or_else(|| StoreError::OutOfBounds(index, index.get() + size - 1))?;
@@ -113,16 +128,10 @@ impl<U: RawBytes> Slices<U> {
     }
     /// # Safety
     /// `index` and `len` are not checked (results of `read_header` are always valid).
-    unsafe fn get_slice<T>(
-        store: &impl MultiStore<U>,
-        index: Index,
-        len: Length,
-    ) -> Result<&[T], StoreError> {
+    unsafe fn get_slice<T>(store: &impl MultiStore<U>, index: Index, len: Length) -> SResult<&[T]> {
         let range = Self::range_of::<T>(index, len)?;
         // SAFETY: guarantied by caller
-        Ok(unsafe {
-            slice::from_raw_parts(store.get_many(range)?.as_ptr() as *const T, len as usize)
-        })
+        Ok(unsafe { slice::from_raw_parts(store.get(range)?.as_ptr() as *const T, len as usize) })
     }
     /// # Safety
     /// `index` and `len` are not checked (results of `read_header` are always valid).
@@ -130,20 +139,17 @@ impl<U: RawBytes> Slices<U> {
         store: &mut impl MultiStore<U>,
         index: Index,
         len: Length,
-    ) -> Result<&mut [T], StoreError> {
+    ) -> SResult<&mut [T]> {
         let range = Self::range_of::<T>(index, len)?;
         // SAFETY: guarantied by caller
         Ok(unsafe {
-            slice::from_raw_parts_mut(
-                store.get_many_mut(range)?.as_mut_ptr() as *mut T,
-                len as usize,
-            )
+            slice::from_raw_parts_mut(store.get_mut(range)?.as_mut_ptr() as *mut T, len as usize)
         })
     }
     /// # Safety
     /// Does not check if `indices` are valid and distinct.
     unsafe fn get_disjoint_mut<const N: usize, T, H, E>(
-        store: &mut impl MultiStore<U>,
+        store: &mut (impl MultiStore<U> + GetDisjointMut<Multi<U>>),
         indices: [Index; N],
         validate: impl Fn(&[((Length, H), Index)]) -> Result<(), E>,
     ) -> Result<[&mut [T]; N], E>
@@ -157,7 +163,7 @@ impl<U: RawBytes> Slices<U> {
         let ranges: [_; N] =
             map_result(&headers, |((len, _), index)| Self::range_of::<T>(*index, *len))?;
         // SAFETY: guarantied by caller
-        let mut data = unsafe { store.get_many_disjoint_unchecked_mut(ranges) };
+        let mut data = unsafe { store.get_disjoint_unchecked_mut(ranges) };
         // SAFETY: always valid for data written by `write_slice`
         Ok(array::from_fn(|i| unsafe {
             slice::from_raw_parts_mut(data[i].as_mut_ptr() as *mut T, headers[i].0.0 as usize)
@@ -185,26 +191,24 @@ impl<U: RawBytes> Slices<U> {
     }
     /// # Safety
     /// `index` and `len` are not checked (results of `read_header` are always valid).
-    unsafe fn delete_slice<'a, T: Copy>(
-        store: &'a mut impl ReusableMultiStore<U>,
+    unsafe fn delete_slice<'a, T: Copy, S: ReusableMultiStore<U>>(
+        store: &'a mut S,
         index: Index,
         len: Length,
-    ) -> Result<BeforeRemoveMany<'a, T, impl FnOnce()>, StoreError>
+    ) -> SResult<<S as RemoveIndirect<Multi<U>>>::Guard<'a>>
     where
         U: 'a,
     {
         let range = Self::range_of::<T>(index, len)?;
         // FIXME: this only removes the data, not the header!
-        let lock = store.remove_many(range)?;
-        // SAFETY: guarantied by caller
-        Ok(unsafe { lock.transmute(len as usize) })
+        store.remove_indirect(range)
     }
 }
 impl<U: RawBytes> Mixed<U> {
     pub(super) fn size_of<T>() -> Length {
         size_of::<T>().div_ceil(size_of::<U>()) as Length
     }
-    fn range_of<T>(index: Index) -> Result<Range<Index>, StoreError> {
+    fn range_of<T>(index: Index) -> SResult<Range<Index>> {
         assert!(align_of::<U>() >= align_of::<T>());
         let size = Self::size_of::<T>();
         let end = Index::new(index.get() + size)
@@ -213,41 +217,38 @@ impl<U: RawBytes> Mixed<U> {
     }
     /// # Safety
     /// `index` has to be a valid pointer to a T.
-    unsafe fn get_instance<T>(store: &impl MultiStore<U>, index: Index) -> Result<&T, StoreError> {
+    unsafe fn get_instance<T>(store: &impl MultiStore<U>, index: Index) -> SResult<&T> {
         let range = Self::range_of::<T>(index)?;
         // SAFETY: guarnatied by caller
-        Ok(unsafe { &*(store.get_many(range)?.as_ptr() as *const T) })
+        Ok(unsafe { &*(store.get(range)?.as_ptr() as *const T) })
     }
     /// # Safety
     /// `index` has to be a valid pointer to a T.
-    unsafe fn get_instance_mut<T>(
-        store: &mut impl MultiStore<U>,
-        index: Index,
-    ) -> Result<&mut T, StoreError> {
+    unsafe fn get_instance_mut<T>(store: &mut impl MultiStore<U>, index: Index) -> SResult<&mut T> {
         let range = Self::range_of::<T>(index)?;
         // SAFETY: guarnatied by caller
-        Ok(unsafe { &mut *(store.get_many_mut(range)?.as_mut_ptr() as *mut T) })
+        Ok(unsafe { &mut *(store.get_mut(range)?.as_mut_ptr() as *mut T) })
     }
     /// # Safety
     /// Does not check if `indices` are valid or distinct.
     unsafe fn get_disjoint_unchecked_mut<const N: usize, T>(
-        store: &mut impl MultiStore<U>,
+        store: &mut impl GetDisjointMut<Multi<U>>,
         indices: [Index; N],
-    ) -> Result<[&mut T; N], StoreError> {
+    ) -> SResult<[&mut T; N]> {
         let ranges: [_; N] = map_result(indices, Self::range_of::<T>)?;
         // SAFETY: guarantied by caller
-        let data = unsafe { store.get_many_disjoint_unchecked_mut(ranges) };
+        let data = unsafe { store.get_disjoint_unchecked_mut(ranges) };
         // SAFETY: always valid for data written by `write_instance`
         Ok(data.map(|d| unsafe { &mut *(d.as_mut_ptr() as *mut T) }))
     }
     /// # Safety
     /// Does not check if `indices` are valid.
     unsafe fn get_disjoint_mut<const N: usize, T>(
-        store: &mut impl MultiStore<U>,
+        store: &mut impl GetDisjointMut<Multi<U>>,
         indices: [Index; N],
-    ) -> Result<[&mut T; N], StoreError> {
+    ) -> SResult<[&mut T; N]> {
         let ranges: [_; N] = map_result(indices, Self::range_of::<T>)?;
-        let data = store.get_many_disjoint_mut(ranges)?;
+        let data = store.get_disjoint_mut(ranges)?;
         // SAFETY: always valid for data written by `write_instance`
         Ok(data.map(|d| unsafe { &mut *(d.as_mut_ptr() as *mut T) }))
     }
@@ -264,12 +265,12 @@ impl<U: RawBytes> Mixed<U> {
     unsafe fn delete_instance<T>(
         store: &mut impl ReusableMultiStore<U>,
         index: Index,
-    ) -> Result<T, StoreError> {
+    ) -> SResult<T> {
         let range = Self::range_of::<T>(index)?;
-        let lock = store.remove_many(range)?;
+        let lock = store.remove_indirect(range)?;
         let mut result = MaybeUninit::uninit();
         // SAFETY: guarantied by caller
-        unsafe { copy_nonoverlapping(lock.as_ptr() as *const T, result.as_mut_ptr(), 1) };
+        unsafe { copy_nonoverlapping(lock.as_ref().as_ptr() as *const T, result.as_mut_ptr(), 1) };
         // SAFETY: previous line always writes a valid T into result
         Ok(unsafe { result.assume_init() })
     }

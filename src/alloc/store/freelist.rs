@@ -29,8 +29,8 @@ impl<T> Default for FreelistStore<T> {
         Self { data: Vec::new(), head: None }
     }
 }
-impl<T> Store<T> for FreelistStore<T> {
-    fn get(&self, index: Index) -> Result<&T, StoreError> {
+impl<T> Get<Single<T>> for FreelistStore<T> {
+    fn get(&self, index: Index) -> SResult<&T> {
         let entry = self
             .data
             .get(index.get() as usize)
@@ -41,7 +41,7 @@ impl<T> Store<T> for FreelistStore<T> {
         }
     }
 
-    fn get_mut(&mut self, index: Index) -> Result<&mut T, StoreError> {
+    fn get_mut(&mut self, index: Index) -> SResult<&mut T> {
         // HACK: circumvent borrowchecker false positive
         let len = self.data.len() as Length;
         let entry =
@@ -51,11 +51,9 @@ impl<T> Store<T> for FreelistStore<T> {
             Entry::Free(_) => Err(StoreError::AccessAfterFree(index)),
         }
     }
-
-    fn get_disjoint_mut<const N: usize>(
-        &mut self,
-        indices: [Index; N],
-    ) -> Result<[&mut T; N], StoreError> {
+}
+impl<T> GetDisjointMut<Single<T>> for FreelistStore<T> {
+    fn get_disjoint_mut<const N: usize>(&mut self, indices: [Index; N]) -> SResult<[&mut T; N]> {
         let entries = self
             .data
             .get_disjoint_mut(indices.map(|i| i.get() as usize))
@@ -89,7 +87,8 @@ impl<T> Store<T> for FreelistStore<T> {
             })
         }
     }
-
+}
+impl<T> Insert<Single<T>> for FreelistStore<T> {
     fn insert_within_capacity(&mut self, data: T) -> Result<Index, T> {
         if let Some(index) = self.head.take() {
             let old = replace(&mut self.data[index.get() as usize], Entry::Occupied(data));
@@ -108,14 +107,21 @@ impl<T> Store<T> for FreelistStore<T> {
             Ok(unsafe { Index::new_unchecked(len as u32) })
         }
     }
+}
+impl<T> Resizable for FreelistStore<T> {
+    fn len(&self) -> Length {
+        self.data.len() as Length
+    }
 
-    fn reserve(&mut self, additional: Length) -> Result<(), StoreError> {
+    fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    fn widen(&mut self, new_len: Length) -> SResult<()> {
         let len = self.data.len() as Length;
-        let min_target =
-            len.checked_add(additional).ok_or(StoreError::OutofMemory(additional, len))?;
-        let target = min_target.max(2 * len).min(Index::MAX.get() + 1);
-        if target < min_target {
-            return Err(StoreError::OutofMemory(additional, len));
+        let target = new_len.max(2 * len).min(Index::MAX.get() + 1);
+        if target < new_len {
+            return Err(StoreError::OutofMemory(len, new_len));
         }
         self.data.reserve_exact((target - len) as usize);
         assert!(
@@ -131,9 +137,10 @@ impl<T> Store<T> for FreelistStore<T> {
         self.head = None;
     }
 }
+impl<T> Store<T> for FreelistStore<T> {}
 
-impl<T> ReusableStore<T> for FreelistStore<T> {
-    fn remove(&mut self, index: Index) -> Result<T, StoreError> {
+impl<T> Remove<Single<T>> for FreelistStore<T> {
+    fn remove(&mut self, index: Index) -> SResult<T> {
         // HACK: circumvent borrowchecker false positive
         let len = self.data.len() as Length;
         let entry =
@@ -151,6 +158,7 @@ impl<T> ReusableStore<T> for FreelistStore<T> {
         }
     }
 }
+impl<T> ReusableStore<T> for FreelistStore<T> {}
 
 #[cfg(test)]
 mod test {
@@ -170,7 +178,7 @@ mod test {
     fn can_expand_capacity() {
         let mut store = FreelistStore::new();
         assert_eq!(Err(42), store.insert_within_capacity(42));
-        assert_eq!(Ok(()), store.reserve(1));
+        assert_eq!(Ok(()), store.widen(1));
     }
 
     #[test]

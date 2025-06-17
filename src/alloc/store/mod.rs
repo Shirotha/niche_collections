@@ -1,12 +1,10 @@
-use std::{
-    mem::MaybeUninit,
-    ops::{Deref, Range},
-    slice::{self, GetDisjointMutError},
-};
+use std::{marker::PhantomData, mem::MaybeUninit, ops::Range, slice::GetDisjointMutError};
 
 use thiserror::Error;
+use variadics_please::{all_tuples_enumerated, all_tuples_with_size};
 
 use super::*;
+use crate::internal::Sealed;
 
 mod simple;
 pub use simple::*;
@@ -25,98 +23,246 @@ pub enum StoreError {
     AccessAfterFree(Index),
     #[error("Tried to free already freed data at index {0}.")]
     DoubleFree(Index),
-    #[error("Tried to allocate {0} items when length was {1}")]
+    #[error("Cannot resize from {0} to {1}, collection too large.")]
     OutofMemory(Length, Length),
     #[error("Disjoint Error: {0}")]
     DisjointError(#[from] GetDisjointMutError),
+    #[error("New capacity {0} is smaller then current capacity {1}")]
+    Narrow(Length, Length),
 }
+pub type SResult<T> = Result<T, StoreError>;
 
-pub trait Store<T> {
-    fn get(&self, index: Index) -> Result<&T, StoreError>;
-    fn get_mut(&mut self, index: Index) -> Result<&mut T, StoreError>;
+pub trait Element {
+    type Index;
+
+    type Val;
+    type Ref<'a>
+    where
+        Self: 'a;
+    type Mut<'a>
+    where
+        Self: 'a;
+}
+pub struct Single<T>(PhantomData<T>);
+impl<T> Element for Single<T> {
+    type Index = Index;
+
+    type Val = T;
+    type Ref<'a>
+        = &'a T
+    where
+        Self: 'a;
+    type Mut<'a>
+        = &'a mut T
+    where
+        Self: 'a;
+}
+pub struct Multi<T>(PhantomData<T>);
+impl<T> Element for Multi<T> {
+    type Index = Range<Index>;
+
+    type Val = T;
+    type Ref<'a>
+        = &'a [T]
+    where
+        Self: 'a;
+    type Mut<'a>
+        = &'a mut [T]
+    where
+        Self: 'a;
+}
+pub struct Masked<M>(PhantomData<M>);
+impl<M: Maskable> Element for Masked<M> {
+    type Index = (Index, Mask);
+
+    type Val = M;
+    type Ref<'a>
+        = M::Ref<'a>
+    where
+        Self: 'a;
+    type Mut<'a>
+        = M::Mut<'a>
+    where
+        Self: 'a;
+}
+pub trait Get<E: Element> {
+    fn get(&self, index: E::Index) -> SResult<E::Ref<'_>>;
+    fn get_mut(&mut self, index: E::Index) -> SResult<E::Mut<'_>>;
+}
+pub trait GetDisjointMut<E: Element> {
     fn get_disjoint_mut<const N: usize>(
         &mut self,
-        indices: [Index; N],
-    ) -> Result<[&mut T; N], StoreError>;
+        indices: [E::Index; N],
+    ) -> SResult<[E::Mut<'_>; N]>;
     /// # Safety
     /// Does not perform any checks on the indices.
     unsafe fn get_disjoint_unchecked_mut<const N: usize>(
         &mut self,
-        indices: [Index; N],
-    ) -> [&mut T; N];
-    fn insert_within_capacity(&mut self, data: T) -> Result<Index, T>;
-    fn reserve(&mut self, additional: Length) -> Result<(), StoreError>;
+        indices: [E::Index; N],
+    ) -> [E::Mut<'_>; N];
+}
+pub trait Insert<E: Element> {
+    fn insert_within_capacity(&mut self, element: E::Val) -> Result<E::Index, E::Val>;
+}
+pub trait InsertIndirect<E: Element> {
+    type Guard<'a>: AsMut<[MaybeUninit<E::Val>]>
+    where
+        Self: 'a,
+        E: 'a;
+    fn insert_indirect_within_capacity(
+        &mut self,
+        size: Length,
+    ) -> Option<(E::Index, Self::Guard<'_>)>;
+}
+pub trait Remove<E: Element> {
+    fn remove(&mut self, index: E::Index) -> SResult<E::Val>;
+}
+pub trait RemoveIndirect<E: Element> {
+    type Guard<'a>: AsRef<E::Ref<'a>>
+    where
+        Self: 'a,
+        E: 'a;
+    fn remove_indirect(&mut self, index: E::Index) -> SResult<Self::Guard<'_>>;
+}
+pub trait Resizable {
+    fn len(&self) -> Length;
+    fn is_empty(&self) -> bool;
+
+    fn widen(&mut self, new_len: Length) -> SResult<()>;
     fn clear(&mut self);
 }
-pub trait ReusableStore<T>: Store<T> {
-    fn remove(&mut self, index: Index) -> Result<T, StoreError>;
-}
+
+// TODO: these marker traits should be automatically implemented for all applicable types
+// - convert to trait alias, or
+// - use auto traits
+pub trait Store<T>: Get<Single<T>> + Insert<Single<T>> + Resizable {}
+pub trait ReusableStore<T>: Store<T> + Remove<Single<T>> {}
+pub trait MultiStore<T>: Get<Multi<T>> + InsertIndirect<Multi<T>> + Resizable {}
+pub trait ReusableMultiStore<T>: MultiStore<T> + RemoveIndirect<Multi<T>> {}
+pub trait MaskedStore<M: Maskable>: Get<Masked<M>> + Insert<Single<M>> + Resizable {}
+pub trait ReusableMaskedStore<M: Maskable>: MaskedStore<M> + Remove<Single<M>> {}
 
 #[derive(Debug)]
-pub struct BeforeInsertMany<'a, T> {
+pub struct InsertIndirectGuard<'a, T> {
     data: &'a mut Vec<T>,
     len:  usize,
 }
-impl<T> BeforeInsertMany<'_, T> {
-    pub fn get_mut(&mut self) -> &mut [MaybeUninit<T>] {
+impl<T> AsMut<[MaybeUninit<T>]> for InsertIndirectGuard<'_, T> {
+    fn as_mut(&mut self) -> &mut [MaybeUninit<T>] {
         &mut self.data.spare_capacity_mut()[0..self.len]
     }
 }
-impl<T> Drop for BeforeInsertMany<'_, T> {
+impl<T> Drop for InsertIndirectGuard<'_, T> {
     fn drop(&mut self) {
         unsafe { self.data.set_len(self.data.len() + self.len) };
     }
 }
 
-#[derive(Debug)]
-pub struct BeforeRemoveMany<'a, T, F: FnOnce()> {
-    data:           &'a [T],
-    commit_removal: Option<F>,
+pub trait Wrapper {
+    type Wrap<'a, T>
+    where
+        T: 'a;
 }
-impl<'a, T, F: FnOnce()> BeforeRemoveMany<'a, T, F> {
-    /// # Safety
-    /// `data` has to be a valid `U` pointer and `len` has to be compatible.
-    pub(super) unsafe fn transmute<U>(mut self, len: usize) -> BeforeRemoveMany<'a, U, F> {
-        BeforeRemoveMany {
-            data:           unsafe { slice::from_raw_parts(self.data.as_ptr() as *const U, len) },
-            commit_removal: self.commit_removal.take(),
+#[macro_export]
+macro_rules! wrapper {
+    { $vis:vis type &$a:lifetime $T:ident; $($rest:tt)* } => {
+        wrapper!{$vis, $a, $T @ $($rest)* }
+    };
+    {$vis:vis, $a:lifetime, $T:ident @
+        $name:ident = $expr:ty;
+        $($rest:tt)*
+    } => {
+        $vis struct $name;
+        impl $crate::alloc::store::Wrapper for $name {
+            type Wrap<$a, $T> = $expr where $T: $a;
         }
-    }
+        wrapper!{$vis, $a, $T @ $($rest)* }
+    };
+    {$vis:vis, $a:lifetime, $T:ident @} => {}
 }
-impl<T, F: FnOnce()> Deref for BeforeRemoveMany<'_, T, F> {
-    type Target = [T];
+pub use wrapper;
+pub mod wrap {
+    wrapper! {
+        pub type &'a T;
 
-    fn deref(&self) -> &Self::Target {
-        self.data
-    }
-}
-impl<T, F: FnOnce()> Drop for BeforeRemoveMany<'_, T, F> {
-    fn drop(&mut self) {
-        self.commit_removal.take().into_iter().for_each(|f| f());
+        Ref = &'a T;
+        Mut = &'a mut T;
+        Opt = Option<T>;
+        OptRef = Option<&'a T>;
+        OptMut = Option<&'a mut T>;
     }
 }
 
-pub trait MultiStore<T: Clone>: Store<T> {
-    fn get_many(&self, index: Range<Index>) -> Result<&[T], StoreError>;
-    fn get_many_mut(&mut self, index: Range<Index>) -> Result<&mut [T], StoreError>;
-    fn get_many_disjoint_mut<const N: usize>(
-        &mut self,
-        indices: [Range<Index>; N],
-    ) -> Result<[&mut [T]; N], StoreError>;
-    /// # Safety
-    /// Does not perform any checks on the indices.
-    unsafe fn get_many_disjoint_unchecked_mut<const N: usize>(
-        &mut self,
-        indices: [Range<Index>; N],
-    ) -> [&mut [T]; N];
-    fn insert_many_within_capacity(
-        &mut self,
-        len: Length,
-    ) -> Option<(Index, BeforeInsertMany<'_, T>)>;
+pub trait Tuple: Sealed {
+    const LEN: usize;
+
+    type Wrapped<'a, W: Wrapper>
+    where
+        Self: 'a;
 }
-pub trait ReusableMultiStore<T: Clone>: MultiStore<T> {
-    fn remove_many(
-        &mut self,
-        index: Range<Index>,
-    ) -> Result<BeforeRemoveMany<'_, T, impl FnOnce()>, StoreError>;
+macro_rules! impl_tuple {
+    ($N:tt, $($T:ident),*) => {
+        impl<$($T),*> Sealed for ($($T,)*) {}
+        impl<$($T),*> Tuple for ($($T,)*) {
+            const LEN: usize = $N;
+
+            type Wrapped<'a, W: Wrapper> = ($(W::Wrap<'a, $T>,)*)
+            where
+                Self: 'a;
+        }
+    };
 }
+all_tuples_with_size!(impl_tuple, 0, 16, T);
+
+pub type Mask = u16;
+pub trait Maskable: From<Self::Tuple> {
+    type Tuple: Tuple + From<Self>;
+
+    type Ref<'a>: From<<Self::Tuple as Tuple>::Wrapped<'a, wrap::Ref>>
+    where
+        Self: 'a;
+    type Mut<'a>: From<<Self::Tuple as Tuple>::Wrapped<'a, wrap::Mut>>
+    where
+        Self: 'a;
+}
+impl<T: Tuple> Maskable for T {
+    type Tuple = T;
+
+    type Ref<'a>
+        = T::Wrapped<'a, wrap::Ref>
+    where
+        Self: 'a;
+    type Mut<'a>
+        = T::Wrapped<'a, wrap::Mut>
+    where
+        Self: 'a;
+}
+pub struct Prefix<T, M>(T, M);
+macro_rules! impl_prefix {
+    ($(($i:tt, $T:ident, $t:ident)),*) => {
+        // TODO: impl for all Maskable<Tuple = (T, ...)> instead (equality constraint causes conflicting impls) (add tuple itself as param to Prefix?)
+        impl<T, $($T),*> Maskable for Prefix<T, ($($T,)*)> {
+            type Tuple = (T, $($T,)*);
+
+            type Ref<'a>
+                = (&'a T, $(&'a $T,)*)
+            where
+                Self: 'a;
+            type Mut<'a>
+                = (&'a mut T, $(&'a mut $T,)*)
+            where
+                Self: 'a;
+        }
+        impl<T, $($T),*> From<(T, $($T,)*)> for Prefix<T, ($($T,)*)> {
+            fn from((t, $($t,)*): (T, $($T,)*)) -> Self {
+                Self(t, ($($t,)*))
+            }
+        }
+        impl<T, $($T),*> From<Prefix<T, ($($T,)*)>> for (T, $($T,)*) {
+            fn from(value: Prefix<T, ($($T,)*)>) -> Self {
+                (value.0, $(value.1.$i,)*)
+            }
+        }
+    };
+}
+all_tuples_enumerated!(impl_prefix, 0, 15, T, t);

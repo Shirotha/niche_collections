@@ -13,3 +13,4 @@ pub enum ArenaError {
     #[error("manager error: {0}")]
     ManagerError(#[from] ManagerError),
 }
+pub type AResult<T> = Result<T, ArenaError>;

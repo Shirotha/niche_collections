@@ -23,34 +23,41 @@ pub struct IntervaltreeStore<T> {
     x: T,
 }
 
-impl<T> Store<T> for IntervaltreeStore<T> {
-    fn get(&self, index: Index) -> Result<&T, StoreError> {
+impl<T> Get<Multi<T>> for IntervaltreeStore<T> {
+    fn get(&self, index: <Multi<T> as Element>::Index) -> SResult<<Multi<T> as Element>::Ref<'_>> {
         todo!()
     }
 
-    fn get_mut(&mut self, index: Index) -> Result<&mut T, StoreError> {
-        todo!()
-    }
-
-    fn get_disjoint_mut<const N: usize>(
+    fn get_mut(
         &mut self,
-        indices: [Index; N],
-    ) -> Result<[&mut T; N], StoreError> {
+        index: <Multi<T> as Element>::Index,
+    ) -> SResult<<Multi<T> as Element>::Mut<'_>> {
         todo!()
     }
+}
+impl<T> InsertIndirect<Multi<T>> for IntervaltreeStore<T> {
+    type Guard<'a>
+        = InsertIndirectGuard<'a, T>
+    where
+        Self: 'a;
 
-    unsafe fn get_disjoint_unchecked_mut<const N: usize>(
+    fn insert_indirect_within_capacity(
         &mut self,
-        indices: [Index; N],
-    ) -> [&mut T; N] {
+        args: Length,
+    ) -> Option<(<Multi<T> as Element>::Index, Self::Guard<'_>)> {
+        todo!()
+    }
+}
+impl<T> Resizable for IntervaltreeStore<T> {
+    fn len(&self) -> Length {
         todo!()
     }
 
-    fn insert_within_capacity(&mut self, data: T) -> Result<Index, T> {
+    fn is_empty(&self) -> bool {
         todo!()
     }
 
-    fn reserve(&mut self, additional: Length) -> Result<(), StoreError> {
+    fn widen(&mut self, new_len: Length) -> SResult<()> {
         todo!()
     }
 
@@ -58,47 +65,22 @@ impl<T> Store<T> for IntervaltreeStore<T> {
         todo!()
     }
 }
-impl<T> ReusableStore<T> for IntervaltreeStore<T> {
-    fn remove(&mut self, index: Index) -> Result<T, StoreError> {
+impl<T> MultiStore<T> for IntervaltreeStore<T> {}
+
+pub struct IntervaltreeRemoveGuard<'a, T>(PhantomData<&'a T>);
+impl<'a, T> AsRef<&'a [T]> for IntervaltreeRemoveGuard<'a, T> {
+    fn as_ref(&self) -> &&'a [T] {
         todo!()
     }
 }
+impl<T> RemoveIndirect<Multi<T>> for IntervaltreeStore<T> {
+    type Guard<'a>
+        = IntervaltreeRemoveGuard<'a, T>
+    where
+        Self: 'a;
 
-impl<T: Clone> MultiStore<T> for IntervaltreeStore<T> {
-    fn get_many(&self, index: Range<Index>) -> Result<&[T], StoreError> {
-        todo!()
-    }
-
-    fn get_many_mut(&mut self, index: Range<Index>) -> Result<&mut [T], StoreError> {
-        todo!()
-    }
-
-    fn get_many_disjoint_mut<const N: usize>(
-        &mut self,
-        indices: [Range<Index>; N],
-    ) -> Result<[&mut [T]; N], StoreError> {
-        todo!()
-    }
-
-    unsafe fn get_many_disjoint_unchecked_mut<const N: usize>(
-        &mut self,
-        indices: [Range<Index>; N],
-    ) -> [&mut [T]; N] {
-        todo!()
-    }
-
-    fn insert_many_within_capacity(
-        &mut self,
-        len: Length,
-    ) -> Option<(Index, BeforeInsertMany<'_, T>)> {
+    fn remove_indirect(&mut self, index: <Multi<T> as Element>::Index) -> SResult<Self::Guard<'_>> {
         todo!()
     }
 }
-// impl<T: Clone> ReusableMultiStore<T> for IntervaltreeStore<T> {
-//     fn remove_many(
-//         &mut self,
-//         index: Range<Index>,
-//     ) -> Result<BeforeRemoveMany<'_, T, impl FnOnce()>, StoreError> {
-//         todo!()
-//     }
-// }
+impl<T> ReusableMultiStore<T> for IntervaltreeStore<T> {}

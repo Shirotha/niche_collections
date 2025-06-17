@@ -23,6 +23,7 @@
       overlays = [devshell.overlays.default (import rust-overlay) (self: super: 
       assert !(super ? rust-toolchain); {
         rust-toolchain = super.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+        # TODO: select fixed version to prevent having multiple nightly compile versions around
         rustfmt-nightly = (super.rust-bin.selectLatestNightlyWith (tc: tc.rustfmt));
       })];
       config = {};
