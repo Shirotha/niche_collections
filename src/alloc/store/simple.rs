@@ -8,8 +8,8 @@ impl<T> SimpleStore<T> {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self { data: Vec::with_capacity(capacity) }
+    pub fn with_capacity(capacity: Length) -> Self {
+        Self { data: Vec::with_capacity(capacity as usize) }
     }
 }
 impl<T> Default for SimpleStore<T> {
@@ -54,21 +54,17 @@ impl<T> Insert<Single<T>> for SimpleStore<T> {
     }
 }
 impl<T> Resizable for SimpleStore<T> {
-    fn len(&self) -> Length {
-        self.data.len() as Length
+    fn capacity(&self) -> Length {
+        self.data.capacity() as Length
     }
 
-    fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-
-    fn widen(&mut self, new_len: Length) -> SResult<()> {
-        let len = self.data.len() as Length;
-        let target = new_len.max(2 * len).min(Index::MAX.get() + 1);
-        if target < new_len {
-            return Err(StoreError::OutofMemory(len, new_len));
+    fn widen(&mut self, new_capacity: Length) -> SResult<()> {
+        let capacity = self.data.capacity() as Length;
+        let target = new_capacity.max(2 * capacity).min(Index::MAX.get() + 1);
+        if target < new_capacity {
+            return Err(StoreError::OutofMemory(capacity, new_capacity));
         }
-        self.data.reserve_exact((target - len) as usize);
+        self.data.reserve_exact((target - capacity) as usize);
         assert!(
             self.data.capacity() <= Index::MAX.get() as usize + 1,
             "capacity exceeds maximum index"

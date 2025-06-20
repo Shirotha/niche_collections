@@ -48,10 +48,10 @@ where
     K: Kind,
 {
     pub fn reserve(&mut self, additional: Length) -> MResult<()> {
-        let new_len = self.store.len().checked_add(additional).ok_or_else(|| {
-            StoreError::OutofMemory(self.store.len(), self.store.len() + additional)
+        let new_capacity = self.store.capacity().checked_add(additional).ok_or_else(|| {
+            StoreError::OutofMemory(self.store.capacity(), self.store.capacity() + additional)
         })?;
-        Ok(self.store.widen(new_len)?)
+        Ok(self.store.widen(new_capacity)?)
     }
     /// This will not drop existing items and might cause a memory leak
     pub fn clear(&mut self) {

@@ -49,18 +49,13 @@ impl<T> InsertIndirect<Multi<T>> for IntervaltreeStore<T> {
     }
 }
 impl<T> Resizable for IntervaltreeStore<T> {
-    fn len(&self) -> Length {
+    fn capacity(&self) -> Length {
         todo!()
     }
 
-    fn is_empty(&self) -> bool {
+    fn widen(&mut self, new_capacity: Length) -> SResult<()> {
         todo!()
     }
-
-    fn widen(&mut self, new_len: Length) -> SResult<()> {
-        todo!()
-    }
-
     fn clear(&mut self) {
         todo!()
     }

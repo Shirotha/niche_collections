@@ -3,7 +3,7 @@ use std::mem::replace;
 use super::*;
 
 #[derive(Debug, PartialEq, Eq)]
-enum Entry<T> {
+pub(super) enum Entry<T> {
     Occupied(T),
     Free(Option<Index>),
 }
@@ -17,11 +17,11 @@ impl<T> FreelistStore<T> {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn with_capacity(capacity: usize) -> Self {
-        if capacity > Index::MAX.get() as usize + 1 {
+    pub fn with_capacity(capacity: Length) -> Self {
+        if capacity > Index::MAX.get() + 1 {
             panic!("capacity exceeds largest possible index!")
         }
-        Self { data: Vec::with_capacity(capacity), head: None }
+        Self { data: Vec::with_capacity(capacity as usize), head: None }
     }
 }
 impl<T> Default for FreelistStore<T> {
@@ -109,21 +109,17 @@ impl<T> Insert<Single<T>> for FreelistStore<T> {
     }
 }
 impl<T> Resizable for FreelistStore<T> {
-    fn len(&self) -> Length {
-        self.data.len() as Length
+    fn capacity(&self) -> Length {
+        self.data.capacity() as Length
     }
 
-    fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-
-    fn widen(&mut self, new_len: Length) -> SResult<()> {
-        let len = self.data.len() as Length;
-        let target = new_len.max(2 * len).min(Index::MAX.get() + 1);
-        if target < new_len {
-            return Err(StoreError::OutofMemory(len, new_len));
+    fn widen(&mut self, new_capacity: Length) -> SResult<()> {
+        let capacity = self.data.capacity() as Length;
+        let target = new_capacity.max(2 * capacity).min(Index::MAX.get() + 1);
+        if target < new_capacity {
+            return Err(StoreError::OutofMemory(capacity, new_capacity));
         }
-        self.data.reserve_exact((target - len) as usize);
+        self.data.reserve_exact((target - capacity) as usize);
         assert!(
             self.data.capacity() <= Index::MAX.get() as usize + 1,
             "capacity exceeds maximum index"

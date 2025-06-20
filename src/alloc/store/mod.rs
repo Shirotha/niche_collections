@@ -12,6 +12,9 @@ pub use simple::*;
 mod freelist;
 pub use freelist::*;
 
+mod masked;
+pub use masked::*;
+
 mod intervaltree;
 pub use intervaltree::*;
 
@@ -125,10 +128,9 @@ pub trait RemoveIndirect<E: Element> {
     fn remove_indirect(&mut self, index: E::Index) -> SResult<Self::Guard<'_>>;
 }
 pub trait Resizable {
-    fn len(&self) -> Length;
-    fn is_empty(&self) -> bool;
+    fn capacity(&self) -> Length;
 
-    fn widen(&mut self, new_len: Length) -> SResult<()>;
+    fn widen(&mut self, new_capacity: Length) -> SResult<()>;
     fn clear(&mut self);
 }
 
@@ -218,10 +220,10 @@ pub type Mask = u16;
 pub trait Maskable: From<Self::Tuple> {
     type Tuple: Tuple + From<Self>;
 
-    type Ref<'a>: From<<Self::Tuple as Tuple>::Wrapped<'a, wrap::Ref>>
+    type Ref<'a>: From<<Self::Tuple as Tuple>::Wrapped<'a, wrap::OptRef>>
     where
         Self: 'a;
-    type Mut<'a>: From<<Self::Tuple as Tuple>::Wrapped<'a, wrap::Mut>>
+    type Mut<'a>: From<<Self::Tuple as Tuple>::Wrapped<'a, wrap::OptMut>>
     where
         Self: 'a;
 }
@@ -229,38 +231,74 @@ impl<T: Tuple> Maskable for T {
     type Tuple = T;
 
     type Ref<'a>
-        = T::Wrapped<'a, wrap::Ref>
+        = T::Wrapped<'a, wrap::OptRef>
     where
         Self: 'a;
     type Mut<'a>
-        = T::Wrapped<'a, wrap::Mut>
+        = T::Wrapped<'a, wrap::OptMut>
     where
         Self: 'a;
 }
-pub struct Prefix<T, M>(T, M);
+// HACK: Inner is needed to distinguish the differennt impl blocks
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Prefix<T, M: Maskable, Inner = <M as Maskable>::Tuple>(T, M, PhantomData<Inner>);
 macro_rules! impl_prefix {
     ($(($i:tt, $T:ident, $t:ident)),*) => {
-        // TODO: impl for all Maskable<Tuple = (T, ...)> instead (equality constraint causes conflicting impls) (add tuple itself as param to Prefix?)
-        impl<T, $($T),*> Maskable for Prefix<T, ($($T,)*)> {
+        impl<T, M, $($T),*> Prefix<T, M, ($($T,)*)>
+        where
+            M: Maskable<Tuple = ($($T,)*)>,
+        {
+            pub fn new(prefix: T, rest: M) -> Self {
+                Self(prefix, rest, PhantomData)
+            }
+            pub fn prefix(&self) -> &T {
+                &self.0
+            }
+            pub fn prefix_mut(&mut self) -> &mut T {
+                &mut self.0
+            }
+            pub fn rest(&self) -> &M {
+                &self.1
+            }
+            pub fn rest_mut(&mut self) -> &mut M {
+                &mut self.1
+            }
+            pub fn into_parts(self) -> (T, M) {
+                (self.0, self.1)
+            }
+        }
+        impl<T, M, $($T),*> Maskable for Prefix<T, M, ($($T,)*)>
+        where
+            M: Maskable<Tuple = ($($T,)*)> + From<($($T,)*)> + Into<($($T,)*)>,
+        {
             type Tuple = (T, $($T,)*);
 
             type Ref<'a>
-                = (&'a T, $(&'a $T,)*)
+                = (Option<&'a T>, $(Option<&'a $T>,)*)
             where
                 Self: 'a;
             type Mut<'a>
-                = (&'a mut T, $(&'a mut $T,)*)
+                = (Option<&'a mut T>, $(Option<&'a mut $T>,)*)
             where
                 Self: 'a;
         }
-        impl<T, $($T),*> From<(T, $($T,)*)> for Prefix<T, ($($T,)*)> {
+        impl<T, M, $($T),*> From<(T, $($T,)*)> for Prefix<T, M, ($($T,)*)>
+        where
+            M: Maskable + From<($($T,)*)>,
+        {
             fn from((t, $($t,)*): (T, $($T,)*)) -> Self {
-                Self(t, ($($t,)*))
+                Self(t, M::from(($($t,)*)), PhantomData)
             }
         }
-        impl<T, $($T),*> From<Prefix<T, ($($T,)*)>> for (T, $($T,)*) {
-            fn from(value: Prefix<T, ($($T,)*)>) -> Self {
-                (value.0, $(value.1.$i,)*)
+        impl<T, M, $($T),*> From<Prefix<T, M, ($($T,)*)>> for (T, $($T,)*)
+        where
+            M: Maskable + Into<($($T,)*)>,
+        {
+            fn from(value: Prefix<T, M, ($($T,)*)>) -> Self {
+                // NOTE: needed for the M::LEN == 0 case
+                #[allow(unused_variables)]
+                let data: ($($T,)*) = value.1.into();
+                (value.0, $(data.$i,)*)
             }
         }
     };

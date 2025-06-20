@@ -69,15 +69,14 @@ impl<U: RawBytes> Kind for Mixed<U> {
     type ReuseableStore<E> = IntervaltreeStore<E>;
 }
 // TODO: implement manager and arena for this
-pub struct SoA<T>(PhantomData<T>);
-impl<T: Maskable> Kind for SoA<T> {
-    type XElement = T;
-    type VElement = Prefix<Version, T>;
+pub struct SoA<M>(PhantomData<M>);
+impl<M: Maskable> Kind for SoA<M> {
+    type XElement = M;
+    type VElement = Prefix<Version, M>;
 
-    // TODO: impl SimpleMaskedStore that uses a MultiStore as a backing buffer
-    type SimpleStore<E> = SimpleStore<E>;
-    // TODO: impl MaskedFreelistStore that uses an Entry for the first element and plain data for the rest
-    type ReuseableStore<E> = FreelistStore<E>;
+    // FIXME: can't restrict E futher (removing restriction in the store doesn't help, since Inner can't be written here
+    type SimpleStore<E> = SimpleStore<E>; // MaskedFreelistStore<E>;
+    type ReuseableStore<E> = FreelistStore<E>; // MaskedFreelistStore<E>;
 }
 
 pub(super) fn map_result<const N: usize, IN, OUT, E, F>(
