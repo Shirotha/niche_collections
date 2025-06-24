@@ -88,6 +88,20 @@ impl<M: Maskable> Element for Masked<M> {
     where
         Self: 'a;
 }
+pub struct FullMasked<M>(PhantomData<M>);
+impl<M: FullMask> Element for FullMasked<M> {
+    type Index = Index;
+
+    type Val = M;
+    type Ref<'a>
+        = M::FullRef<'a>
+    where
+        Self: 'a;
+    type Mut<'a>
+        = M::FullMut<'a>
+    where
+        Self: 'a;
+}
 pub trait Get<E: Element> {
     fn get(&self, index: E::Index) -> SResult<E::Ref<'_>>;
     fn get_mut(&mut self, index: E::Index) -> SResult<E::Mut<'_>>;
@@ -227,6 +241,14 @@ pub trait Maskable: From<Self::Tuple> {
     where
         Self: 'a;
 }
+pub trait FullMask: Maskable {
+    type FullRef<'a>: From<<Self::Tuple as Tuple>::Wrapped<'a, wrap::Ref>>
+    where
+        Self: 'a;
+    type FullMut<'a>: From<<Self::Tuple as Tuple>::Wrapped<'a, wrap::Mut>>
+    where
+        Self: 'a;
+}
 impl<T: Tuple> Maskable for T {
     type Tuple = T;
 
@@ -236,6 +258,16 @@ impl<T: Tuple> Maskable for T {
         Self: 'a;
     type Mut<'a>
         = T::Wrapped<'a, wrap::OptMut>
+    where
+        Self: 'a;
+}
+impl<T: Tuple> FullMask for T {
+    type FullRef<'a>
+        = T::Wrapped<'a, wrap::Ref>
+    where
+        Self: 'a;
+    type FullMut<'a>
+        = T::Wrapped<'a, wrap::Mut>
     where
         Self: 'a;
 }
@@ -279,6 +311,19 @@ macro_rules! impl_prefix {
                 Self: 'a;
             type Mut<'a>
                 = (Option<&'a mut T>, $(Option<&'a mut $T>,)*)
+            where
+                Self: 'a;
+        }
+        impl<T, M, $($T),*> FullMask for Prefix<T, M, ($($T,)*)>
+        where
+            M: Maskable<Tuple = ($($T,)*)> + From<($($T,)*)> + Into<($($T,)*)>,
+        {
+            type FullRef<'a>
+                = (&'a T, $(&'a $T,)*)
+            where
+                Self: 'a;
+            type FullMut<'a>
+                = (&'a mut T, $(&'a mut $T,)*)
             where
                 Self: 'a;
         }

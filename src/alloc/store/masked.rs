@@ -170,6 +170,125 @@ macro_rules! impl_store {
                 } else { Err(StoreError::OutOfBounds(index.0, 0)) }
             }
         }
+        impl<M, $($T),*> Get<FullMasked<M>> for MaskedFreelistStore<M, ($($T,)*)>
+        where
+            M: FullMask<Tuple = ($($T,)*)>,
+        {
+            fn get(&self, index: Index) -> SResult<M::FullRef<'_>> {
+                if let Some(base) = self.data {
+                    if index.get() >= self.cap {
+                        return Err(StoreError::OutOfBounds(index, self.cap));
+                    }
+                    if !Self::is_occupied(base, index) {
+                        return Err(StoreError::AccessAfterFree(index));
+                    }
+                    Ok(M::FullRef::from(($({
+                        let array = Self::pointer_for(base, $i, self.cap);
+                        // SAFETY: array is always a valid T pointer and index is checked to be in-bounds
+                        unsafe { array.add(index.get() as usize * Self::size_of($i)).cast::<$T>().as_ref() }
+                    },)*)))
+                } else { Err(StoreError::OutOfBounds(index, 0)) }
+            }
+            fn get_mut(&mut self, index: Index) -> SResult<M::FullMut<'_>> {
+                if let Some(base) = self.data {
+                    if index.get() >= self.cap {
+                        return Err(StoreError::OutOfBounds(index, self.cap));
+                    }
+                    if !Self::is_occupied(base, index) {
+                        return Err(StoreError::AccessAfterFree(index));
+                    }
+                    Ok(M::FullMut::from(($({
+                        let array = Self::pointer_for(base, $i, self.cap);
+                        // SAFETY: array is always a valid T pointer and index is checked to be in-bounds
+                        unsafe { array.add(index.get() as usize * Self::size_of($i)).cast::<$T>().as_mut() }
+                    },)*)))
+                } else { Err(StoreError::OutOfBounds(index, 0)) }
+            }
+        }
+        impl<M, $($T),*> GetDisjointMut<Masked<M>> for MaskedFreelistStore<M, ($($T,)*)>
+        where
+            M: Maskable<Tuple = ($($T,)*)>,
+        {
+            fn get_disjoint_mut<const N: usize>(
+                &mut self,
+                indices: [(Index, Mask); N],
+            ) -> SResult<[M::Mut<'_>; N]> {
+                if indices[0..N - 1].iter().enumerate().any(|(start, index)| {
+                        indices[start + 1..].iter().any(|other| index.0 == other.0 && index.1 & other.1 != 0)
+                    }) {
+                    return Err(GetDisjointMutError::OverlappingIndices.into())
+                }
+                // SAFETY: indices are disjoint here
+                Ok(unsafe { self.get_disjoint_unchecked_mut(indices) })
+            }
+            /// # Safety
+            /// Does not check if the indices are disjoint.
+            /// # Panics
+            /// Panics if any index by itself is invalid.
+            unsafe fn get_disjoint_unchecked_mut<const N: usize>(
+                &mut self,
+                indices: [(Index, Mask); N],
+            ) -> [M::Mut<'_>; N] {
+                if let Some(base) = self.data {
+                    indices.map(|index| {
+                        if index.0.get() >= self.cap {
+                            panic!("index out of bounds");
+                        }
+                        if !Self::is_occupied(base, index.0) {
+                            panic!("use after free")
+                        }
+                        M::Mut::from(($({
+                            if (index.1 >> $i) & 1 == 1 {
+                                let array = Self::pointer_for(base, $i, self.cap);
+                                // SAFETY: array is always a valid T pointer and index.0 is checked to be in-bounds
+                                Some(unsafe { array.add(index.0.get() as usize * Self::size_of($i)).cast::<$T>().as_mut() })
+                            } else { None }
+                        },)*))
+                    })
+                } else { panic!("tried to index empty store") }
+            }
+        }
+        impl<M, $($T),*> GetDisjointMut<FullMasked<M>> for MaskedFreelistStore<M, ($($T,)*)>
+        where
+            M: FullMask<Tuple = ($($T,)*)>,
+        {
+            fn get_disjoint_mut<const N: usize>(
+                &mut self,
+                indices: [Index; N],
+            ) -> SResult<[M::FullMut<'_>; N]> {
+                if indices[0..N - 1].iter().enumerate().any(|(start, index)| {
+                        indices[start + 1..].iter().any(|other| index == other)
+                    }) {
+                    return Err(GetDisjointMutError::OverlappingIndices.into())
+                }
+                // SAFETY: indices are disjoint here
+                Ok(unsafe { GetDisjointMut::<FullMasked<M>>::get_disjoint_unchecked_mut(self, indices) })
+            }
+            /// # Safety
+            /// Does not check if the indices are disjoint.
+            /// # Panics
+            /// Panics if any index by itself is invalid.
+            unsafe fn get_disjoint_unchecked_mut<const N: usize>(
+                &mut self,
+                indices: [Index; N],
+            ) -> [M::FullMut<'_>; N] {
+                if let Some(base) = self.data {
+                    indices.map(|index| {
+                        if index.get() >= self.cap {
+                            panic!("index out of bounds");
+                        }
+                        if !Self::is_occupied(base, index) {
+                            panic!("use after free")
+                        }
+                        M::FullMut::from(($({
+                                let array = Self::pointer_for(base, $i, self.cap);
+                                // SAFETY: array is always a valid T pointer and index.0 is checked to be in-bounds
+                                unsafe { array.add(index.get() as usize * Self::size_of($i)).cast::<$T>().as_mut() }
+                        },)*))
+                    })
+                } else { panic!("tried to index empty store") }
+            }
+        }
         impl<M, $($T),*> Insert<Single<M>> for MaskedFreelistStore<M, ($($T,)*)>
         where
             M: Maskable<Tuple = ($($T,)*)> + Into<($($T,)*)>,
