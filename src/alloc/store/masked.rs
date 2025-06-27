@@ -40,6 +40,14 @@ where
         Self::new()
     }
 }
+// TODO: instead of impl per (T, ...), impl on all M
+// - construct result using queries instead (basically make Mask static)
+// - a query result should be able to handle loading itself from the buffer (knowning only its index)
+// - use result trait and impl on &(mut) T and custom types (e.g. Ref<N, T>: grab N-th component of type T (in case M has the same type multiple times), also the N-th &T in the query should grab the N-th component)
+// - generate a type_id table (when creating the layout) to be able to map the result type to the correct slice
+// - maybe cache final pointers for faster reuse of query in case of iteration
+// - maybe instead of providing a single result, provide an array of all results, that then can be indexed with the handle
+// - decide mutability based on query, instead of providing get_mut
 macro_rules! impl_store {
     ($(($i:tt, $T:ident)),*) => {
         impl<M, $($T),*> MaskedFreelistStore<M, ($($T,)*)>

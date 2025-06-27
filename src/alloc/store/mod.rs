@@ -231,6 +231,10 @@ macro_rules! impl_tuple {
 all_tuples_with_size!(impl_tuple, 0, 16, T);
 
 pub type Mask = u16;
+// TODO: make this work without using (T, ...) in interface
+// - use callbacks (that can get called once per T) instead
+// - use FnMut(Layout) callback for info to construct buffer (also pass length, then bit-arrays can work)
+// - use FnMut(usize) -> Option<NonNull<u8>> callback to read/write values (provide pointer to start of n-th Layout, then bit-arrays can work)
 pub trait Maskable: From<Self::Tuple> {
     type Tuple: Tuple + From<Self>;
 

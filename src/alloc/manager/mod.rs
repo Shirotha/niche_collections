@@ -13,8 +13,7 @@ mod version;
 use thiserror::Error;
 pub use version::*;
 
-use super::*;
-use crate::alloc::store::*;
+use super::{arena::*, store::*, *};
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ManagerError {
@@ -25,13 +24,14 @@ pub enum ManagerError {
 }
 pub type MResult<T> = Result<T, ManagerError>;
 
-pub trait Kind {
-    type XElement;
-    type VElement;
-
-    type SimpleStore<E>;
-    type ReuseableStore<E>;
+pub trait Config {
+    type Store;
+    type Manager<'id>;
+    type Arena<'id, 'man>;
 }
+pub struct GlobalConfig<K, C>(PhantomData<(K, C)>);
+pub type RemoveSliceGuard<'a, U, C> =
+    <<GlobalConfig<Slices<U>, C> as Config>::Store as RemoveIndirect<Multi<U>>>::Guard<'a>;
 pub trait RawBytes: Copy {}
 macro_rules! impl_RawBytes {
     ($t:ty) => {
@@ -44,40 +44,64 @@ impl_RawBytes!(u32);
 impl_RawBytes!(u64);
 impl_RawBytes!(u128);
 
-pub struct Typed<T>(PhantomData<T>);
-impl<T> Kind for Typed<T> {
-    type XElement = T;
-    type VElement = (Version, T);
+pub struct Versioned<const REUSE: bool = false, H = Headless, V = ()>(PhantomData<(H, V)>);
+pub struct Exclusive<const REUSE: bool = false, V = ()>(PhantomData<V>);
 
-    type SimpleStore<E> = SimpleStore<E>;
-    type ReuseableStore<E> = FreelistStore<E>;
+macro_rules! kind {
+    ($vis:vis struct $name:ident $(<$($T:ident),*>)? [[$elX:ty, $elV:ty], [$storeS:ident, $storeR:ident]] $(where $($where:tt)*)?) => {
+        $vis struct $name$(<$($T),*>(PhantomData<($($T,)*)>))? $(where $($where)*)?;
+        impl$(<$($T),*>)? Config for GlobalConfig<$name$(<$($T),*>)?, Exclusive<false>> $(where $($where)*)? {
+            type Store = $storeS<$elX>;
+            type Manager<'id> = XManager<'id, $name$(<$($T),*>)?, Exclusive<false>>;
+            type Arena<'id, 'man> = XArena<'id, $name$(<$($T),*>)?, Exclusive<false>>;
+        }
+        impl$(<$($T),*>)? Config for GlobalConfig<$name$(<$($T),*>)?, Exclusive<true>> $(where $($where)*)? {
+            type Store = $storeR<$elX>;
+            type Manager<'id> = XManager<'id, $name$(<$($T),*>)?, Exclusive<true>>;
+            type Arena<'id, 'man> = XArena<'id, $name$(<$($T),*>)?, Exclusive<true>>;
+        }
+        impl<H$(, $($T),*)?> Config for GlobalConfig<$name$(<$($T),*>)?, Versioned<false, H>> $(where $($where)*)? {
+            type Store = $storeS<$elV>;
+            type Manager<'id> = VManager<'id, $name$(<$($T),*>)?, Versioned<false, H>>;
+            type Arena<'id, 'man> = VArena<'id, 'man, $name$(<$($T),*>)?, Versioned<false, H>>;
+        }
+        impl<H$(, $($T),*)?> Config for GlobalConfig<$name$(<$($T),*>)?, Versioned<true, H>> $(where $($where)*)? {
+            type Store = $storeS<$elV>;
+            type Manager<'id> = VManager<'id, $name$(<$($T),*>)?, Versioned<true, H>>;
+            type Arena<'id, 'man> = VArena<'id, 'man, $name$(<$($T),*>)?, Versioned<true, H>>;
+        }
+    };
 }
-pub struct Slices<U>(PhantomData<U>);
-impl<U: RawBytes> Kind for Slices<U> {
-    type XElement = U;
-    type VElement = U;
+kind! {
+    pub struct Typed<T>[
+        [T, (Version, T)],
+        [SimpleStore, FreelistStore]
+    ]
+}
+kind! {
+    pub struct Slices<U>[
+        [U, U],
+        [SimpleStore, IntervaltreeStore]
+    ] where U: RawBytes
+}
+kind! {
+    pub struct Mixed<U>[
+        [U, U],
+        [SimpleStore, IntervaltreeStore]
+    ] where U: RawBytes
+}
+// FIXME: Prefix needes to be a Tuple for some reason (not a Maskable)
+//   (is it because all impls are for Inner = (T, ...) and not for Inner: Tuple?)
+// kind! {
+//     pub struct SoA<M>[
+//         [M, Prefix<Version, M>],
+//         [MaskedFreelistStore, MaskedFreelistStore]
+//     ] where M: Maskable
+// }
 
-    type SimpleStore<E> = SimpleStore<E>;
-    type ReuseableStore<E> = IntervaltreeStore<E>;
-}
-pub struct Mixed<U>(PhantomData<U>);
-impl<U: RawBytes> Kind for Mixed<U> {
-    type XElement = U;
-    type VElement = U;
-
-    type SimpleStore<E> = SimpleStore<E>;
-    type ReuseableStore<E> = IntervaltreeStore<E>;
-}
-// TODO: implement manager and arena for this
-pub struct SoA<M>(PhantomData<M>);
-impl<M: Maskable> Kind for SoA<M> {
-    type XElement = M;
-    type VElement = Prefix<Version, M>;
-
-    // FIXME: can't restrict E futher (removing restriction in the store doesn't help, since Inner can't be written here
-    type SimpleStore<E> = SimpleStore<E>; // MaskedFreelistStore<E>;
-    type ReuseableStore<E> = FreelistStore<E>; // MaskedFreelistStore<E>;
-}
+pub struct Manager<'id, K, C>(pub(super) <GlobalConfig<K, C> as Config>::Manager<'id>)
+where
+    GlobalConfig<K, C>: Config;
 
 pub(super) fn map_result<const N: usize, IN, OUT, E, F>(
     srcs: impl IntoIterator<Item = IN>,

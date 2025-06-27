@@ -51,8 +51,11 @@ where
 }
 
 // SAFETY: 'id is a valid guarded lifetime
-unsafe impl<'man, K: Kind, S, H: Header> NeedGuard for VArena<'_, 'man, K, S, H> {
-    type Type<'id> = VArena<'id, 'man, K, S, H>;
+unsafe impl<'man, K, C, H: Header> NeedGuard for VArena<'_, 'man, K, C, H>
+where
+    GlobalConfig<K, C>: Config,
+{
+    type Type<'id> = VArena<'id, 'man, K, C, H>;
 }
 
 #[cfg(test)]

@@ -3,18 +3,27 @@ use parking_lot::{RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
 use super::*;
 
 #[derive(Debug)]
-pub struct VArenaReadGuard<'a, 'id, 'man, K: Kind, S, H: Header> {
-    pub(super) manager: RwLockReadGuard<'a, ManagerCell<'man, K, S>>,
+pub struct VArenaReadGuard<'a, 'id, 'man, K, C, H: Header>
+where
+    GlobalConfig<K, C>: Config,
+{
+    pub(super) manager: RwLockReadGuard<'a, ManagerCell<'man, K, C>>,
     pub(super) port:    RwLockReadGuard<'a, (Id<'id>, H)>,
 }
 #[derive(Debug)]
-pub struct VArenaWriteGuard<'a, 'id, 'man, K: Kind, S, H: Header> {
-    pub(super) manager: RwLockReadGuard<'a, ManagerCell<'man, K, S>>,
+pub struct VArenaWriteGuard<'a, 'id, 'man, K, C, H: Header>
+where
+    GlobalConfig<K, C>: Config,
+{
+    pub(super) manager: RwLockReadGuard<'a, ManagerCell<'man, K, C>>,
     pub(super) port:    RwLockWriteGuard<'a, (Id<'id>, H)>,
 }
 #[derive(Debug)]
-pub struct VArenaAllocGuard<'a, 'id, 'man, K: Kind, S, H: Header> {
-    pub(super) manager: RwLockUpgradableReadGuard<'a, ManagerCell<'man, K, S>>,
+pub struct VArenaAllocGuard<'a, 'id, 'man, K, C, H: Header>
+where
+    GlobalConfig<K, C>: Config,
+{
+    pub(super) manager: RwLockUpgradableReadGuard<'a, ManagerCell<'man, K, C>>,
     pub(super) port:    RwLockWriteGuard<'a, (Id<'id>, H)>,
 }
 macro_rules! manager {
@@ -35,40 +44,48 @@ macro_rules! manager {
 }
 macro_rules! impl_read {
     ($type:ident) => {
-        impl<'id, 'man, K, S, H> $type<'_, 'id, 'man, K, S, H>
+        impl<'id, 'man, K, C, H> $type<'_, 'id, 'man, K, C, H>
         where
-            K: Kind,
-            S: Store<K::VElement>,
+            GlobalConfig<K, C>: Config,
             H: Header,
         {
             pub fn header(&self) -> &H {
                 &self.port.1
             }
         }
-        impl<'id, 'man, T, S, H> $type<'_, 'id, 'man, Typed<T>, S, H>
+        impl<'id, 'man, T, const REUSE: bool, H, V> $type<'_, 'id, 'man, Typed<T>, Versioned<REUSE, H, V>, H>
         where
-            S: Store<(Version, T)>,
             H: Header,
+            GlobalConfig<Typed<T>, Versioned<REUSE, H, V>>: for<'x> Config<
+                    Store: Store<(Version, T)>,
+                    Manager<'x> = VManager<'x, Typed<T>, Versioned<REUSE, H, V>>,
+                >,
         {
             pub fn get(&self, handle: VHandle<'id, T>) -> AResult<&T> {
                 Ok(manager!(ref self).get(map_handle!(handle<T> 'id -> 'man))?)
             }
         }
-        impl<'id, 'man, U, S, H> $type<'_, 'id, 'man, Slices<U>, S, H>
+        impl<'id, 'man, U, const REUSE: bool, H, V> $type<'_, 'id, 'man, Slices<U>, Versioned<REUSE, H, V>, H>
         where
             U: RawBytes,
-            S: MultiStore<U>,
             H: Header,
+            GlobalConfig<Slices<U>, Versioned<REUSE, H, V>>: for<'x> Config<
+                    Store: MultiStore<U>,
+                    Manager<'x> = VManager<'x, Slices<U>, Versioned<REUSE, H, V>>,
+                >,
         {
             pub fn get<T>(&self, handle: VHandle<'id, [T]>) -> AResult<&[T]> {
                 Ok(manager!(ref self).get(map_handle!(handle<[T]> 'id -> 'man))?)
             }
         }
-        impl<'id, 'man, U, S, H> $type<'_, 'id, 'man, Mixed<U>, S, H>
+        impl<'id, 'man, U, const REUSE: bool, H, V> $type<'_, 'id, 'man, Mixed<U>, Versioned<REUSE, H, V>, H>
         where
             U: RawBytes,
-            S: MultiStore<U>,
-            H : Header,
+            H: Header,
+            GlobalConfig<Mixed<U>, Versioned<REUSE, H, V>>: for<'x> Config<
+                    Store: MultiStore<U>,
+                    Manager<'x> = VManager<'x, Mixed<U>, Versioned<REUSE, H, V>>,
+                >,
         {
             pub fn get<T>(&self, handle: VHandle<'id, T>) -> AResult<&T> {
                 Ok(manager!(ref self).get(map_handle!(handle<T> 'id -> 'man))?)
@@ -81,27 +98,29 @@ impl_read!(VArenaWriteGuard);
 impl_read!(VArenaAllocGuard);
 macro_rules! impl_write {
     ($type:ident) => {
-        impl<'id, 'man, K, S, H> $type<'_, 'id, 'man, K, S, H>
+        impl<'id, 'man, K, C, H> $type<'_, 'id, 'man, K, C, H>
         where
-            K: Kind,
-            S: Store<K::VElement>,
+            GlobalConfig<K, C>: Config,
             H: Header,
         {
             pub fn header_mut(&mut self) -> &mut H {
                 &mut self.port.1
             }
         }
-        impl<'id, 'man, T, S, H> $type<'_, 'id, 'man, Typed<T>, S, H>
+        impl<'id, 'man, T, const REUSE: bool, H, V> $type<'_, 'id, 'man, Typed<T>, Versioned<REUSE, H, V>, H>
         where
-            S: Store<(Version, T)>,
             H: Header,
+            GlobalConfig<Typed<T>, Versioned<REUSE, H, V>>: for<'x> Config<
+                    Store: Store<(Version, T)>,
+                    Manager<'x> = VManager<'x, Typed<T>, Versioned<REUSE, H, V>>,
+                >,
         {
             pub fn get_mut(&mut self, handle: VHandle<'id, T>) -> AResult<&mut T> {
                 Ok(manager!(mut self).get_mut(map_handle!(handle<T> 'id -> 'man))?)
             }
             pub fn move_to<'to, M>(
                 &mut self,
-                _to: &mut VArena<'to, 'man, Typed<T>, S, H>,
+                _to: &mut Arena<'to, 'man, Typed<T>, Versioned<REUSE, H, V>>,
                 target: M::Container<'id>
             ) -> AResult<M::Container<'to>>
             where
@@ -112,10 +131,13 @@ macro_rules! impl_write {
                 Ok(M::update(target, map_handle!(handle<T> 'man -> 'to)))
             }
         }
-        impl<'id, 'man, T, S, H> $type<'_, 'id, 'man, Typed<T>, S, H>
+        impl<'id, 'man, T, const REUSE: bool, H, V> $type<'_, 'id, 'man, Typed<T>, Versioned<REUSE, H, V>, H>
         where
-            S: Store<(Version, T)> + GetDisjointMut<Single<(Version, T)>>,
             H: Header,
+            GlobalConfig<Typed<T>, Versioned<REUSE, H, V>>: for<'x> Config<
+                    Store: Store<(Version, T)> + GetDisjointMut<Single<(Version, T)>>,
+                    Manager<'x> = VManager<'x, Typed<T>, Versioned<REUSE, H, V>>,
+                >,
         {
             pub fn get_disjoint_mut<const N: usize>(
                 &mut self,
@@ -125,18 +147,21 @@ macro_rules! impl_write {
                     .get_disjoint_mut(handles.map(|handle| map_handle!(handle<T> 'id -> 'man)))?)
             }
         }
-        impl<'id, 'man, U, S, H> $type<'_, 'id, 'man, Slices<U>, S, H>
+        impl<'id, 'man, U, const REUSE: bool, H, V> $type<'_, 'id, 'man, Slices<U>, Versioned<REUSE, H, V>, H>
         where
             U: RawBytes,
-            S: MultiStore<U>,
             H: Header,
+            GlobalConfig<Slices<U>, Versioned<REUSE, H, V>>: for<'x> Config<
+                    Store: MultiStore<U>,
+                    Manager<'x> = VManager<'x, Slices<U>, Versioned<REUSE, H, V>>,
+                >,
         {
             pub fn get_mut<T>(&mut self, handle: VHandle<'id, [T]>) -> AResult<&mut [T]> {
                 Ok(manager!(mut self).get_mut(map_handle!(handle<[T]> 'id -> 'man))?)
             }
             pub fn move_to<'to, M, T>(
                 &mut self,
-                _to: &mut VArena<'to, 'man, Slices<U>, S, H>,
+                _to: &mut Arena<'to, 'man, Slices<U>, Versioned<REUSE, H, V>>,
                 target: M::Container<'id>
             ) -> AResult<M::Container<'to>>
             where
@@ -147,11 +172,14 @@ macro_rules! impl_write {
                 Ok(M::update(target, map_handle!(handle<[T]> 'man -> 'to)))
             }
         }
-        impl<'id, 'man, U, S, H> $type<'_, 'id, 'man, Slices<U>, S, H>
+        impl<'id, 'man, U, const REUSE: bool, H, V> $type<'_, 'id, 'man, Slices<U>, Versioned<REUSE, H, V>, H>
         where
             U: RawBytes,
-            S: MultiStore<U> + GetDisjointMut<Multi<U>>,
             H: Header,
+            GlobalConfig<Slices<U>, Versioned<REUSE, H, V>>: for<'x> Config<
+                    Store: MultiStore<U> + GetDisjointMut<Multi<U>>,
+                    Manager<'x> = VManager<'x, Slices<U>, Versioned<REUSE, H, V>>,
+                >,
         {
             pub fn get_disjoint_mut<const N: usize, T>(
                 &mut self,
@@ -161,18 +189,21 @@ macro_rules! impl_write {
                     .get_disjoint_mut(handles.map(|handle| map_handle!(handle<[T]> 'id -> 'man)))?)
             }
         }
-        impl<'id, 'man, U, S, H> $type<'_, 'id, 'man, Mixed<U>, S, H>
+        impl<'id, 'man, U, const REUSE: bool, H, V> $type<'_, 'id, 'man, Mixed<U>, Versioned<REUSE, H, V>, H>
         where
             U: RawBytes,
-            S: MultiStore<U>,
             H: Header,
+            GlobalConfig<Mixed<U>, Versioned<REUSE, H, V>>: for<'x> Config<
+                    Store: MultiStore<U>,
+                    Manager<'x> = VManager<'x, Mixed<U>, Versioned<REUSE, H, V>>,
+                >,
         {
             pub fn get_mut<T>(&mut self, handle: VHandle<'id, T>) -> AResult<&mut T> {
                 Ok(manager!(mut self).get_mut(map_handle!(handle<T> 'id -> 'man))?)
             }
             pub fn move_to<'to, M, T>(
                 &mut self,
-                _to: &mut VArena<'to, 'man, Mixed<U>, S, H>,
+                _to: &mut Arena<'to, 'man, Mixed<U>, Versioned<REUSE, H, V>>,
                 target: M::Container<'id>
             ) -> AResult<M::Container<'to>>
             where
@@ -183,11 +214,14 @@ macro_rules! impl_write {
                 Ok(M::update(target, map_handle!(handle<T> 'man -> 'to)))
             }
         }
-        impl<'id, 'man, U, S, H> $type<'_, 'id, 'man, Mixed<U>, S, H>
+        impl<'id, 'man, U, const REUSE: bool, H, V> $type<'_, 'id, 'man, Mixed<U>, Versioned<REUSE, H, V>, H>
         where
             U: RawBytes,
-            S: MultiStore<U> + GetDisjointMut<Multi<U>>,
             H: Header,
+            GlobalConfig<Mixed<U>, Versioned<REUSE, H, V>>: for<'x> Config<
+                    Store: MultiStore<U> + GetDisjointMut<Multi<U>>,
+                    Manager<'x> = VManager<'x, Mixed<U>, Versioned<REUSE, H, V>>,
+                >,
         {
             pub fn get_disjoint_mut<const N: usize, T>(
                 &mut self,
@@ -201,27 +235,32 @@ macro_rules! impl_write {
 }
 impl_write!(VArenaWriteGuard);
 impl_write!(VArenaAllocGuard);
-impl<'a, 'id, 'man, K, S, H> VArenaAllocGuard<'a, 'id, 'man, K, S, H>
+impl<'a, 'id, 'man, K, const REUSE: bool, H, V>
+    VArenaAllocGuard<'a, 'id, 'man, K, Versioned<REUSE, H, V>, H>
 where
-    S: Resizable,
-    K: Kind,
     H: Header,
+    GlobalConfig<K, Versioned<REUSE, H, V>>:
+        for<'x> Config<Store: Resizable, Manager<'x> = VManager<'x, K, Versioned<REUSE, H, V>>>,
 {
     #[rustfmt::skip]
     pub fn reserve(&mut self, additional: Length) -> AResult<()> {
         manager!(lock self |manager| Ok(manager.reserve(additional)?))
     }
-    pub fn downgrade(self) -> VArenaWriteGuard<'a, 'id, 'man, K, S, H> {
+    pub fn downgrade(self) -> VArenaWriteGuard<'a, 'id, 'man, K, Versioned<REUSE, H, V>, H> {
         VArenaWriteGuard {
             manager: RwLockUpgradableReadGuard::downgrade(self.manager),
             port:    self.port,
         }
     }
 }
-impl<'id, 'man, T, S, H> VArenaAllocGuard<'_, 'id, 'man, Typed<T>, S, H>
+impl<'id, 'man, T, const REUSE: bool, H, V>
+    VArenaAllocGuard<'_, 'id, 'man, Typed<T>, Versioned<REUSE, H, V>, H>
 where
-    S: Store<(Version, T)>,
     H: Header,
+    GlobalConfig<Typed<T>, Versioned<REUSE, H, V>>: for<'x> Config<
+            Store: Store<(Version, T)>,
+            Manager<'x> = VManager<'x, Typed<T>, Versioned<REUSE, H, V>>,
+        >,
 {
     pub fn insert_within_capacity(&mut self, data: T) -> Result<VHandle<'id, T>, T> {
         let handle = manager!(mut self).insert_within_capacity(data)?;
@@ -242,20 +281,27 @@ where
         }
     }
 }
-impl<'id, 'man, T, S, H> VArenaAllocGuard<'_, 'id, 'man, Typed<T>, S, H>
+impl<'id, 'man, T, H, V> VArenaAllocGuard<'_, 'id, 'man, Typed<T>, Versioned<true, H, V>, H>
 where
-    S: ReusableStore<(Version, T)>,
     H: Header,
+    GlobalConfig<Typed<T>, Versioned<true, H, V>>: for<'x> Config<
+            Store: ReusableStore<(Version, T)>,
+            Manager<'x> = VManager<'x, Typed<T>, Versioned<true, H, V>>,
+        >,
 {
     pub fn remove(&mut self, handle: VHandle<'id, T>) -> AResult<T> {
         Ok(manager!(mut self).remove(map_handle!(handle<T> 'id -> 'man))?)
     }
 }
-impl<'id, 'man, U, S, H> VArenaAllocGuard<'_, 'id, 'man, Slices<U>, S, H>
+impl<'id, 'man, U, const REUSE: bool, H, V>
+    VArenaAllocGuard<'_, 'id, 'man, Slices<U>, Versioned<REUSE, H, V>, H>
 where
     U: RawBytes,
-    S: MultiStore<U>,
     H: Header,
+    GlobalConfig<Slices<U>, Versioned<REUSE, H, V>>: for<'x> Config<
+            Store: MultiStore<U>,
+            Manager<'x> = VManager<'x, Slices<U>, Versioned<REUSE, H, V>>,
+        >,
 {
     pub fn insert_within_capacity<T: Copy>(&mut self, data: &[T]) -> Option<VHandle<'id, [T]>> {
         let handle = manager!(mut self).insert_within_capacity(data)?;
@@ -277,24 +323,31 @@ where
         }
     }
 }
-impl<'id, 'man, U, S, H> VArenaAllocGuard<'_, 'id, 'man, Slices<U>, S, H>
+impl<'id, 'man, U, H, V> VArenaAllocGuard<'_, 'id, 'man, Slices<U>, Versioned<true, H, V>, H>
 where
     U: RawBytes,
-    S: ReusableMultiStore<U>,
     H: Header,
+    GlobalConfig<Slices<U>, Versioned<true, H, V>>: for<'x> Config<
+            Store: ReusableMultiStore<U>,
+            Manager<'x> = VManager<'x, Slices<U>, Versioned<true, H, V>>,
+        >,
 {
     pub fn remove<T: Copy>(
         &mut self,
         handle: VHandle<'id, [T]>,
-    ) -> AResult<<S as RemoveIndirect<Multi<U>>>::Guard<'_>> {
+    ) -> AResult<RemoveSliceGuard<'_, U, Versioned<true, H, V>>> {
         Ok(manager!(mut self).remove(map_handle!(handle<[T]> 'id -> 'man))?)
     }
 }
-impl<'id, 'man, U, S, H> VArenaAllocGuard<'_, 'id, 'man, Mixed<U>, S, H>
+impl<'id, 'man, U, const REUSE: bool, H, V>
+    VArenaAllocGuard<'_, 'id, 'man, Mixed<U>, Versioned<REUSE, H, V>, H>
 where
     U: RawBytes,
-    S: MultiStore<U>,
     H: Header,
+    GlobalConfig<Mixed<U>, Versioned<REUSE, H, V>>: for<'x> Config<
+            Store: MultiStore<U>,
+            Manager<'x> = VManager<'x, Mixed<U>, Versioned<REUSE, H, V>>,
+        >,
 {
     pub fn insert_within_capacity<T>(&mut self, data: T) -> Result<VHandle<'id, T>, T> {
         let handle = manager!(mut self).insert_within_capacity(data)?;
@@ -315,11 +368,14 @@ where
         }
     }
 }
-impl<'id, 'man, U, S, H> VArenaAllocGuard<'_, 'id, 'man, Mixed<U>, S, H>
+impl<'id, 'man, U, H, V> VArenaAllocGuard<'_, 'id, 'man, Mixed<U>, Versioned<true, H, V>, H>
 where
     U: RawBytes,
-    S: ReusableMultiStore<U>,
     H: Header,
+    GlobalConfig<Mixed<U>, Versioned<true, H, V>>: for<'x> Config<
+            Store: ReusableMultiStore<U>,
+            Manager<'x> = VManager<'x, Mixed<U>, Versioned<true, H, V>>,
+        >,
 {
     pub fn remove<T>(&mut self, handle: VHandle<'id, T>) -> AResult<T> {
         Ok(manager!(mut self).remove(map_handle!(handle<T> 'id -> 'man))?)
