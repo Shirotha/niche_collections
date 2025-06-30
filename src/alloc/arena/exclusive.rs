@@ -83,6 +83,7 @@ where
     pub fn get(&self, handle: &XHandle<'id, T>) -> AResult<&T> {
         Ok(manager!(ref self).get(handle)?)
     }
+    #[expect(clippy::mut_from_ref, reason = "mutability is controlled by the handle")]
     pub fn get_mut(&self, handle: &mut XHandle<'id, T>) -> AResult<&mut T> {
         Ok(manager!(mut self).get_mut(handle)?)
     }
@@ -113,6 +114,7 @@ where
             Arena<'x, 'x> = XArena<'x, Typed<T>, Exclusive<REUSE, V>>,
         >,
 {
+    #[expect(clippy::mut_from_ref, reason = "mutability is controlled by the handle")]
     pub fn get_disjoint_mut<const N: usize>(
         &self,
         handles: [&mut XHandle<'id, T>; N],
@@ -148,6 +150,7 @@ where
     pub fn get<T>(&self, handle: &XHandle<'id, [T]>) -> AResult<&[T]> {
         Ok(manager!(ref self).get(handle)?)
     }
+    #[expect(clippy::mut_from_ref, reason = "mutability is controlled by the handle")]
     pub fn get_mut<T>(&self, handle: &mut XHandle<'id, [T]>) -> AResult<&mut [T]> {
         Ok(manager!(mut self).get_mut(handle)?)
     }
@@ -180,6 +183,7 @@ where
             Arena<'x, 'x> = XArena<'x, Slices<U>, Exclusive<REUSE, V>>,
         >,
 {
+    #[expect(clippy::mut_from_ref, reason = "mutability is controlled by the handle")]
     pub fn get_disjoint_mut<const N: usize, T>(
         &self,
         handles: [&mut XHandle<'id, [T]>; N],
@@ -217,6 +221,7 @@ where
     pub fn get<T>(&self, handle: &XHandle<'id, T>) -> AResult<&T> {
         Ok(manager!(ref self).get(handle)?)
     }
+    #[expect(clippy::mut_from_ref, reason = "mutability is controlled by the handle")]
     pub fn get_mut<T>(&self, handle: &mut XHandle<'id, T>) -> AResult<&mut T> {
         Ok(manager!(mut self).get_mut(handle)?)
     }
@@ -248,6 +253,7 @@ where
             Arena<'x, 'x> = XArena<'x, Mixed<U>, Exclusive<REUSE, V>>,
         >,
 {
+    #[expect(clippy::mut_from_ref, reason = "mutability is controlled by the handle")]
     pub fn get_disjoint_mut<const N: usize, T>(
         &self,
         handles: [&mut XHandle<'id, T>; N],

@@ -32,7 +32,6 @@ pub trait MappableHandle {
 
     fn handle<'id>(target: &Self::Container<'id>) -> VHandle<'id, Self::Data>;
 
-    #[expect(clippy::needless_lifetimes)]
     fn update<'from, 'to>(
         from: Self::Container<'from>,
         to: VHandle<'to, Self::Data>,
@@ -46,7 +45,6 @@ impl<T> MappableHandle for VHandle<'_, T> {
         *target
     }
 
-    #[expect(clippy::needless_lifetimes)]
     fn update<'from, 'to>(
         _from: Self::Container<'from>,
         to: VHandle<'to, Self::Data>,
