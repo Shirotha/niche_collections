@@ -90,14 +90,12 @@ kind! {
         [SimpleStore, IntervaltreeStore]
     ] where U: RawBytes
 }
-// FIXME: Prefix needes to be a Tuple for some reason (not a Maskable)
-//   (is it because all impls are for Inner = (T, ...) and not for Inner: Tuple?)
-// kind! {
-//     pub struct SoA<M>[
-//         [M, Prefix<Version, M>],
-//         [MaskedFreelistStore, MaskedFreelistStore]
-//     ] where M: Maskable
-// }
+kind! {
+    pub struct SoA<C>[
+        [C, Prefix<Version, C>],
+        [SoAFreelistStore, SoAFreelistStore]
+    ] where C: Columns
+}
 
 pub struct Manager<'id, K, C>(pub(super) <GlobalConfig<K, C> as Config>::Manager<'id>)
 where

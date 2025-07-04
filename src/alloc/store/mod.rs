@@ -1,10 +1,17 @@
-use std::{marker::PhantomData, mem::MaybeUninit, ops::Range, slice::GetDisjointMutError};
+use std::{
+    alloc::{Layout, LayoutError},
+    any::TypeId,
+    marker::PhantomData,
+    mem::MaybeUninit,
+    ops::Range,
+    ptr::NonNull,
+    slice::GetDisjointMutError,
+};
 
 use thiserror::Error;
-use variadics_please::{all_tuples_enumerated, all_tuples_with_size};
+use variadics_please::{all_tuples, all_tuples_enumerated, all_tuples_with_size};
 
 use super::*;
-use crate::internal::Sealed;
 
 mod simple;
 pub use simple::*;
@@ -12,8 +19,8 @@ pub use simple::*;
 mod freelist;
 pub use freelist::*;
 
-mod masked;
-pub use masked::*;
+mod soa;
+pub use soa::*;
 
 mod intervaltree;
 pub use intervaltree::*;
@@ -32,6 +39,10 @@ pub enum StoreError {
     DisjointError(#[from] GetDisjointMutError),
     #[error("New capacity {0} is smaller then current capacity {1}")]
     Narrow(Length, Length),
+    #[error("Invalid columns layout: {0}")]
+    InvalidLayout(&'static str),
+    #[error("Invalid query: {0}")]
+    InvalidQuery(&'static str),
 }
 pub type SResult<T> = Result<T, StoreError>;
 
@@ -71,34 +82,6 @@ impl<T> Element for Multi<T> {
         Self: 'a;
     type Mut<'a>
         = &'a mut [T]
-    where
-        Self: 'a;
-}
-pub struct Masked<M>(PhantomData<M>);
-impl<M: Maskable> Element for Masked<M> {
-    type Index = (Index, Mask);
-
-    type Val = M;
-    type Ref<'a>
-        = M::Ref<'a>
-    where
-        Self: 'a;
-    type Mut<'a>
-        = M::Mut<'a>
-    where
-        Self: 'a;
-}
-pub struct FullMasked<M>(PhantomData<M>);
-impl<M: FullMask> Element for FullMasked<M> {
-    type Index = Index;
-
-    type Val = M;
-    type Ref<'a>
-        = M::FullRef<'a>
-    where
-        Self: 'a;
-    type Mut<'a>
-        = M::FullMut<'a>
     where
         Self: 'a;
 }
@@ -147,6 +130,121 @@ pub trait Resizable {
     fn widen(&mut self, new_capacity: Length) -> SResult<()>;
     fn clear(&mut self);
 }
+// TODO: tie this together with Element
+/// # Safety
+/// This trait is responsible to construct an `Output`
+/// using only raw pointers, this is inherently unsafe.
+pub unsafe trait Query {
+    const READONLY: bool;
+
+    type Output<'a>
+    where
+        Self: 'a;
+    type Cache;
+
+    fn get<'a>(cache: &'a Self::Cache, index: Index) -> Self::Output<'a>
+    where
+        Self: 'a;
+    fn build_cache(
+        column: &mut impl FnMut(TypeId, ColumnIndex) -> Option<NonNull<u8>>,
+    ) -> SResult<Self::Cache>;
+}
+pub enum ColumnIndex {
+    Index(u8),
+    Next,
+}
+// HACK: 'static constraint needed because of TypeId
+unsafe impl<T: 'static> Query for &T {
+    const READONLY: bool = true;
+
+    type Output<'a>
+        = &'a T
+    where
+        Self: 'a;
+    type Cache = NonNull<T>;
+
+    fn get<'a>(cache: &'a Self::Cache, index: Index) -> Self::Output<'a>
+    where
+        Self: 'a,
+    {
+        // SAFETY: cache is a column of type T
+        unsafe { cache.add(index.get() as usize).as_ref() }
+    }
+
+    fn build_cache(
+        get_column: &mut impl FnMut(TypeId, ColumnIndex) -> Option<NonNull<u8>>,
+    ) -> SResult<Self::Cache> {
+        let ptr = get_column(TypeId::of::<T>(), ColumnIndex::Next)
+            .ok_or(StoreError::InvalidQuery("column not found"))?;
+        Ok(ptr.cast())
+    }
+}
+// HACK: 'static constraint needed because of TypeId
+unsafe impl<T: 'static> Query for &mut T {
+    const READONLY: bool = false;
+
+    type Output<'a>
+        = &'a mut T
+    where
+        Self: 'a;
+    type Cache = NonNull<T>;
+
+    fn get<'a>(cache: &'a Self::Cache, index: Index) -> Self::Output<'a>
+    where
+        Self: 'a,
+    {
+        // SAFETY: cache is a column of type T
+        unsafe { cache.add(index.get() as usize).as_mut() }
+    }
+
+    fn build_cache(
+        array: &mut impl FnMut(TypeId, ColumnIndex) -> Option<NonNull<u8>>,
+    ) -> SResult<Self::Cache> {
+        let ptr = array(TypeId::of::<T>(), ColumnIndex::Next)
+            .ok_or(StoreError::InvalidQuery("column not found"))?;
+        Ok(ptr.cast())
+    }
+}
+// TODO: make a Nth{Mut}<N, T> type that accesses ColumnIndex::Index(N)
+// TODO: make a Bits{Mut}<N> type that accesses bits of a BitArray (use AtomicU8 as backing type)
+macro_rules! impl_query {
+    ($(($T:ident, $c:ident)),*) => {
+        unsafe impl<$($T: Query),*> Query for ($($T,)*) {
+            const READONLY: bool = true $(&& $T::READONLY)*;
+
+            type Output<'a>
+                = ($($T::Output<'a>,)*)
+            where
+                Self: 'a;
+            type Cache = ($($T::Cache,)*);
+
+            fn get<'a>(($($c,)*): &'a Self::Cache, index: Index) -> Self::Output<'a>
+            where
+                Self: 'a
+            {
+                ($($T::get($c, index),)*)
+            }
+            fn build_cache(
+                array: &mut impl FnMut(TypeId, ColumnIndex) -> Option<NonNull<u8>>,
+            ) -> SResult<Self::Cache> {
+                Ok(($($T::build_cache(array)?,)*))
+            }
+        }
+    };
+}
+all_tuples!(impl_query, 1, 16, T, c);
+
+pub struct QueryResult<'a, Q: Query>(Q::Cache, PhantomData<&'a ()>);
+impl<'a, Q: Query> QueryResult<'a, Q> {
+    pub fn get(&self, index: Index) -> Q::Output<'_> {
+        Q::get(&self.0, index)
+    }
+}
+pub trait Queryable {
+    // TODO: constrain with `READONLY = true` once stable
+    fn get<Q: Query>(&self) -> SResult<QueryResult<Q>>;
+    fn get_mut<Q: Query>(&mut self) -> SResult<QueryResult<Q>>;
+}
 
 // TODO: these marker traits should be automatically implemented for all applicable types
 // - convert to trait alias, or
@@ -155,8 +253,8 @@ pub trait Store<T>: Get<Single<T>> + Insert<Single<T>> + Resizable {}
 pub trait ReusableStore<T>: Store<T> + Remove<Single<T>> {}
 pub trait MultiStore<T>: Get<Multi<T>> + InsertIndirect<Multi<T>> + Resizable {}
 pub trait ReusableMultiStore<T>: MultiStore<T> + RemoveIndirect<Multi<T>> {}
-pub trait MaskedStore<M: Maskable>: Get<Masked<M>> + Insert<Single<M>> + Resizable {}
-pub trait ReusableMaskedStore<M: Maskable>: MaskedStore<M> + Remove<Single<M>> {}
+pub trait SoAStore<C: Columns>: Queryable + Insert<Single<C>> + Resizable {}
+pub trait ReusableSoAStore<C: Columns>: SoAStore<C> + Remove<Single<C>> {}
 
 #[derive(Debug)]
 pub struct InsertIndirectGuard<'a, T> {
@@ -170,186 +268,127 @@ impl<T> AsMut<[MaybeUninit<T>]> for InsertIndirectGuard<'_, T> {
 }
 impl<T> Drop for InsertIndirectGuard<'_, T> {
     fn drop(&mut self) {
+        // SAFETY: user is responsible to initialize the data
         unsafe { self.data.set_len(self.data.len() + self.len) };
     }
 }
 
-pub trait Wrapper {
-    type Wrap<'a, T>
-    where
-        T: 'a;
-}
-#[macro_export]
-macro_rules! wrapper {
-    { $vis:vis type &$a:lifetime $T:ident; $($rest:tt)* } => {
-        wrapper!{$vis, $a, $T @ $($rest)* }
-    };
-    {$vis:vis, $a:lifetime, $T:ident @
-        $name:ident = $expr:ty;
-        $($rest:tt)*
-    } => {
-        $vis struct $name;
-        impl $crate::alloc::store::Wrapper for $name {
-            type Wrap<$a, $T> = $expr where $T: $a;
-        }
-        wrapper!{$vis, $a, $T @ $($rest)* }
-    };
-    {$vis:vis, $a:lifetime, $T:ident @} => {}
-}
-pub use wrapper;
-pub mod wrap {
-    wrapper! {
-        pub type &'a T;
+/// # Safety
+/// This trait is responsible to register its own memory layout
+/// and move values in and out of a store
+/// using only raw pointers, this is inherently unsafe.
+pub unsafe trait Columns: Sized {
+    const COUNT: usize;
 
-        Ref = &'a T;
-        Mut = &'a mut T;
-        Opt = Option<T>;
-        OptRef = Option<&'a T>;
-        OptMut = Option<&'a mut T>;
-    }
+    /// Registers each column with the store.
+    /// `register` will be called exactly `COUNT` times.
+    fn register_layout(
+        count: Length,
+        register: &mut impl FnMut(TypeId, Layout),
+    ) -> Result<(), LayoutError>;
+    /// Moves itself to memory addresses provided by `next_column`.
+    /// `next_column` will be called exactly `COUNT` times.
+    fn move_into(self, index: Index, next_column: &mut impl FnMut() -> NonNull<u8>);
+    /// Loads itself from memory addresses provided by `next_column`.
+    /// `next_column` will be called exactly `COUNT` times.
+    fn take(index: Index, next_column: &mut impl FnMut() -> NonNull<u8>) -> Self;
+    /// Return reference to n-th row, as a freelist entry.
+    /// `get_column` will only be called with values `0..COUNT`.
+    fn as_freelist_entry(
+        index: Index,
+        get_column: &mut impl FnMut(usize) -> NonNull<u8>,
+    ) -> &mut Option<Index>;
 }
+macro_rules! impl_columns {
+    ($N:expr, $(($T:ident, $t:ident)),*) => {
+        // HACK: 'static constraint needed because of TypeId
+        unsafe impl<$($T: 'static),*> Columns for ($($T,)*) {
+            const COUNT: usize = $N;
 
-pub trait Tuple: Sealed {
-    const LEN: usize;
-
-    type Wrapped<'a, W: Wrapper>
-    where
-        Self: 'a;
-}
-macro_rules! impl_tuple {
-    ($N:tt, $($T:ident),*) => {
-        impl<$($T),*> Sealed for ($($T,)*) {}
-        impl<$($T),*> Tuple for ($($T,)*) {
-            const LEN: usize = $N;
-
-            type Wrapped<'a, W: Wrapper> = ($(W::Wrap<'a, $T>,)*)
-            where
-                Self: 'a;
-        }
-    };
-}
-all_tuples_with_size!(impl_tuple, 0, 16, T);
-
-pub type Mask = u16;
-// TODO: make this work without using (T, ...) in interface
-// - use callbacks (that can get called once per T) instead
-// - use FnMut(Layout) callback for info to construct buffer (also pass length, then bit-arrays can work)
-// - use FnMut(usize) -> Option<NonNull<u8>> callback to read/write values (provide pointer to start of n-th Layout, then bit-arrays can work)
-pub trait Maskable: From<Self::Tuple> {
-    type Tuple: Tuple + From<Self>;
-
-    type Ref<'a>: From<<Self::Tuple as Tuple>::Wrapped<'a, wrap::OptRef>>
-    where
-        Self: 'a;
-    type Mut<'a>: From<<Self::Tuple as Tuple>::Wrapped<'a, wrap::OptMut>>
-    where
-        Self: 'a;
-}
-pub trait FullMask: Maskable {
-    type FullRef<'a>: From<<Self::Tuple as Tuple>::Wrapped<'a, wrap::Ref>>
-    where
-        Self: 'a;
-    type FullMut<'a>: From<<Self::Tuple as Tuple>::Wrapped<'a, wrap::Mut>>
-    where
-        Self: 'a;
-}
-impl<T: Tuple> Maskable for T {
-    type Tuple = T;
-
-    type Ref<'a>
-        = T::Wrapped<'a, wrap::OptRef>
-    where
-        Self: 'a;
-    type Mut<'a>
-        = T::Wrapped<'a, wrap::OptMut>
-    where
-        Self: 'a;
-}
-impl<T: Tuple> FullMask for T {
-    type FullRef<'a>
-        = T::Wrapped<'a, wrap::Ref>
-    where
-        Self: 'a;
-    type FullMut<'a>
-        = T::Wrapped<'a, wrap::Mut>
-    where
-        Self: 'a;
-}
-// HACK: Inner is needed to distinguish the differennt impl blocks
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Prefix<T, M: Maskable, Inner = <M as Maskable>::Tuple>(T, M, PhantomData<Inner>);
-macro_rules! impl_prefix {
-    ($(($i:tt, $T:ident, $t:ident)),*) => {
-        impl<T, M, $($T),*> Prefix<T, M, ($($T,)*)>
-        where
-            M: Maskable<Tuple = ($($T,)*)>,
-        {
-            pub fn new(prefix: T, rest: M) -> Self {
-                Self(prefix, rest, PhantomData)
+            fn register_layout(
+                count: Length,
+                register: &mut impl FnMut(TypeId, Layout),
+            ) -> Result<(), LayoutError> {
+                $(register(
+                    TypeId::of::<$T>(),
+                    Layout::from_size_align(count as usize * size_of::<$T>(), align_of::<$T>())?
+                );)*
+                Ok(())
             }
-            pub fn prefix(&self) -> &T {
-                &self.0
+            fn move_into(
+                self,
+                index: Index,
+                next_column: &mut impl FnMut() -> NonNull<u8>,
+            ) {
+                let ($($t,)*) = self;
+                $({
+                    let column = next_column();
+                    // SAFETY: column was registered to be of type $T
+                    unsafe { column.cast::<$T>().add(index.get() as usize).write($t) }
+                })*
             }
-            pub fn prefix_mut(&mut self) -> &mut T {
-                &mut self.0
+            fn take(index: Index, next_column: &mut impl FnMut() -> NonNull<u8>) -> Self {
+                ($({
+                    let column = next_column();
+                    // SAFETY: column was registered to be of type $T
+                    unsafe { column.cast::<$T>().add(index.get() as usize).read() }
+                },)*)
             }
-            pub fn rest(&self) -> &M {
-                &self.1
-            }
-            pub fn rest_mut(&mut self) -> &mut M {
-                &mut self.1
-            }
-            pub fn into_parts(self) -> (T, M) {
-                (self.0, self.1)
-            }
-        }
-        impl<T, M, $($T),*> Maskable for Prefix<T, M, ($($T,)*)>
-        where
-            M: Maskable<Tuple = ($($T,)*)> + From<($($T,)*)> + Into<($($T,)*)>,
-        {
-            type Tuple = (T, $($T,)*);
-
-            type Ref<'a>
-                = (Option<&'a T>, $(Option<&'a $T>,)*)
-            where
-                Self: 'a;
-            type Mut<'a>
-                = (Option<&'a mut T>, $(Option<&'a mut $T>,)*)
-            where
-                Self: 'a;
-        }
-        impl<T, M, $($T),*> FullMask for Prefix<T, M, ($($T,)*)>
-        where
-            M: Maskable<Tuple = ($($T,)*)> + From<($($T,)*)> + Into<($($T,)*)>,
-        {
-            type FullRef<'a>
-                = (&'a T, $(&'a $T,)*)
-            where
-                Self: 'a;
-            type FullMut<'a>
-                = (&'a mut T, $(&'a mut $T,)*)
-            where
-                Self: 'a;
-        }
-        impl<T, M, $($T),*> From<(T, $($T,)*)> for Prefix<T, M, ($($T,)*)>
-        where
-            M: Maskable + From<($($T,)*)>,
-        {
-            fn from((t, $($t,)*): (T, $($T,)*)) -> Self {
-                Self(t, M::from(($($t,)*)), PhantomData)
-            }
-        }
-        impl<T, M, $($T),*> From<Prefix<T, M, ($($T,)*)>> for (T, $($T,)*)
-        where
-            M: Maskable + Into<($($T,)*)>,
-        {
-            fn from(value: Prefix<T, M, ($($T,)*)>) -> Self {
-                // NOTE: needed for the M::LEN == 0 case
-                #[allow(unused_variables)]
-                let data: ($($T,)*) = value.1.into();
-                (value.0, $(data.$i,)*)
+            fn as_freelist_entry(
+                index: Index,
+                get_column: &mut impl FnMut(usize) -> NonNull<u8>,
+            ) -> &mut Option<Index> {
+                let column = get_column(0);
+                unsafe {
+                    column.add(index.get() as usize * [$(size_of::<$T>()),*][0]).cast::<Option<Index>>().as_mut()
+                }
             }
         }
     };
 }
-all_tuples_enumerated!(impl_prefix, 0, 15, T, t);
+all_tuples_with_size!(impl_columns, 1, 16, T, t);
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Join<T>(pub T);
+pub type Prefix<T, C> = Join<((T,), C)>;
+macro_rules! impl_join {
+    ((0, $T0:ident) $(,($i:tt, $T:ident))*) => {
+
+        unsafe impl<$T0: Columns, $($T: Columns),*> Columns for Join<($T0, $($T,)*)>
+        {
+            const COUNT: usize = $T0::COUNT $(+ $T::COUNT)*;
+
+            fn register_layout(
+                count: Length,
+                register: &mut impl FnMut(TypeId, Layout),
+            ) -> Result<(), LayoutError> {
+                $T0::register_layout(count, register)?;
+                $($T::register_layout(count, register)?;)*
+                Ok(())
+            }
+
+            fn move_into(
+                self,
+                index: Index,
+                next_column: &mut impl FnMut() -> NonNull<u8>,
+            ) {
+                self.0.0.move_into(index, next_column);
+                $(self.0.$i.move_into(index, next_column);)*
+            }
+
+            fn take(index: Index, next_column: &mut impl FnMut() -> NonNull<u8>) -> Self {
+                Self((
+                    $T0::take(index, next_column),
+                    $($T::take(index, next_column),)*
+                ))
+            }
+
+            fn as_freelist_entry(
+                index: Index,
+                get_column: &mut impl FnMut(usize) -> NonNull<u8>,
+            ) -> &mut Option<Index> {
+                $T0::as_freelist_entry(index, get_column)
+            }
+        }
+    };
+}
+all_tuples_enumerated!(impl_join, 1, 16, T);
