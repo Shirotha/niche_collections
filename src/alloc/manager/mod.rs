@@ -32,6 +32,7 @@ pub trait Config {
 pub struct GlobalConfig<K, C>(PhantomData<(K, C)>);
 pub type RemoveSliceGuard<'a, U, C> =
     <<GlobalConfig<Slices<U>, C> as Config>::Store as RemoveIndirect<Multi<U>>>::Guard<'a>;
+// TODO: replace with Alignment once stable
 pub trait RawBytes: Copy {}
 macro_rules! impl_RawBytes {
     ($t:ty) => {
@@ -43,7 +44,6 @@ impl_RawBytes!(u16);
 impl_RawBytes!(u32);
 impl_RawBytes!(u64);
 impl_RawBytes!(u128);
-
 pub struct Versioned<const REUSE: bool = false, H = Headless, V = ()>(PhantomData<(H, V)>);
 pub struct Exclusive<const REUSE: bool = false, V = ()>(PhantomData<V>);
 
@@ -79,6 +79,12 @@ kind! {
     ]
 }
 kind! {
+    pub struct SoA<C>[
+        [C, Prefix<Version, C>],
+        [SoAFreelistStore, SoAFreelistStore]
+    ] where C: Columns
+}
+kind! {
     pub struct Slices<U>[
         [U, U],
         [SimpleStore, IntervaltreeStore]
@@ -89,12 +95,6 @@ kind! {
         [U, U],
         [SimpleStore, IntervaltreeStore]
     ] where U: RawBytes
-}
-kind! {
-    pub struct SoA<C>[
-        [C, Prefix<Version, C>],
-        [SoAFreelistStore, SoAFreelistStore]
-    ] where C: Columns
 }
 
 pub struct Manager<'id, K, C>(pub(super) <GlobalConfig<K, C> as Config>::Manager<'id>)

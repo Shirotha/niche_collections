@@ -8,6 +8,20 @@ macro_rules! map_handle {
     };
 }
 pub(super) use map_handle;
+#[macro_export]
+macro_rules! map_query {
+    (ref $query:ident<$t:lifetime, $c:ty, $q:ty> $from:lifetime -> $to:lifetime) => {
+        // SAFETY: there is no safety here
+        unsafe { std::mem::transmute::<VQuery<$from, $t, $c, $q>, VQuery<$to, $t, $c, $q>>($query) }
+    };
+    (mut $query:ident<$t:lifetime, $c:ty, $q:ty> $from:lifetime -> $to:lifetime) => {
+        // SAFETY: there is no safety here
+        unsafe {
+            std::mem::transmute::<VQueryMut<$from, $t, $c, $q>, VQueryMut<$to, $t, $c, $q>>($query)
+        }
+    };
+}
+pub(super) use map_query;
 
 #[derive(Debug, Clone, Copy)]
 pub struct HandleMap<'from, 'to> {

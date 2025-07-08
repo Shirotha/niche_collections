@@ -2,7 +2,7 @@ use std::{
     alloc::{Layout, LayoutError},
     any::TypeId,
     marker::PhantomData,
-    mem::MaybeUninit,
+    mem::{ManuallyDrop, MaybeUninit},
     ops::Range,
     ptr::NonNull,
     slice::GetDisjointMutError,
@@ -210,6 +210,8 @@ unsafe impl<T: 'static> Query for &mut T {
 macro_rules! impl_query {
     ($(($T:ident, $c:ident)),*) => {
         unsafe impl<$($T: Query),*> Query for ($($T,)*) {
+            #![allow(unused_variables,  clippy::unused_unit, reason = "needed for the 0-tuple case")]
+
             const READONLY: bool = true $(&& $T::READONLY)*;
 
             type Output<'a>
@@ -232,9 +234,10 @@ macro_rules! impl_query {
         }
     };
 }
-all_tuples!(impl_query, 1, 16, T, c);
+all_tuples!(impl_query, 0, 16, T, c);
 
-pub struct QueryResult<'a, Q: Query>(Q::Cache, PhantomData<&'a ()>);
+#[derive(Debug)]
+pub struct QueryResult<'a, Q: Query>(Q::Cache, PhantomData<&'a Q::Cache>);
 impl<'a, Q: Query> QueryResult<'a, Q> {
     pub fn get(&self, index: Index) -> Q::Output<'_> {
         Q::get(&self.0, index)
@@ -299,16 +302,27 @@ pub unsafe trait Columns: Sized {
         get_column: &mut impl FnMut(usize) -> NonNull<u8>,
     ) -> &mut Option<Index>;
 }
+pub union FreelistEntry<T> {
+    data: ManuallyDrop<T>,
+    next: Option<Index>,
+}
 macro_rules! impl_columns {
-    ($N:expr, $(($T:ident, $t:ident)),*) => {
+    ($N:expr, ($T0:ident, $t0:ident) $(, ($T:ident, $t:ident))*) => {
         // HACK: 'static constraint needed because of TypeId
-        unsafe impl<$($T: 'static),*> Columns for ($($T,)*) {
+        unsafe impl<$T0: 'static, $($T: 'static),*> Columns for ($T0, $($T,)*) {
             const COUNT: usize = $N;
 
             fn register_layout(
                 count: Length,
                 register: &mut impl FnMut(TypeId, Layout),
             ) -> Result<(), LayoutError> {
+                register(
+                    TypeId::of::<$T0>(),
+                    Layout::from_size_align(
+                        count as usize * size_of::<FreelistEntry<$T0>>(),
+                        align_of::<FreelistEntry<$T0>>()
+                    )?
+                );
                 $(register(
                     TypeId::of::<$T>(),
                     Layout::from_size_align(count as usize * size_of::<$T>(), align_of::<$T>())?
@@ -320,27 +334,47 @@ macro_rules! impl_columns {
                 index: Index,
                 next_column: &mut impl FnMut() -> NonNull<u8>,
             ) {
-                let ($($t,)*) = self;
+                let ($t0, $($t,)*) = self;
+                {
+                    let column = next_column();
+                    // SAFETY: column was registered to be of type FreelistEntry<$T0>
+                    unsafe {
+                        column.cast::<FreelistEntry<$T0>>().add(index.get() as usize)
+                            .write(FreelistEntry { data: ManuallyDrop::new($t0) })
+                    };
+                }
                 $({
                     let column = next_column();
                     // SAFETY: column was registered to be of type $T
-                    unsafe { column.cast::<$T>().add(index.get() as usize).write($t) }
+                    unsafe { column.cast::<$T>().add(index.get() as usize).write($t) };
                 })*
             }
             fn take(index: Index, next_column: &mut impl FnMut() -> NonNull<u8>) -> Self {
-                ($({
-                    let column = next_column();
-                    // SAFETY: column was registered to be of type $T
-                    unsafe { column.cast::<$T>().add(index.get() as usize).read() }
-                },)*)
+                (
+                    {
+                        let column = next_column();
+                        // SAFETY: column was registered to be of type FreelistEntry<$T0>
+                        unsafe {
+                            ManuallyDrop::take(&mut column.cast::<FreelistEntry<$T0>>()
+                                .add(index.get() as usize).read().data)
+                        }
+                    },
+                    $({
+                        let column = next_column();
+                        // SAFETY: column was registered to be of type $T
+                        unsafe { column.cast::<$T>().add(index.get() as usize).read() }
+                    },)*
+                )
             }
             fn as_freelist_entry(
                 index: Index,
                 get_column: &mut impl FnMut(usize) -> NonNull<u8>,
             ) -> &mut Option<Index> {
                 let column = get_column(0);
+                // SAFETY: column was registered to be of type FreelistEntry<$T0>
                 unsafe {
-                    column.add(index.get() as usize * [$(size_of::<$T>()),*][0]).cast::<Option<Index>>().as_mut()
+                    &mut column.cast::<FreelistEntry<$T0>>()
+                        .add(index.get() as usize).as_mut().next
                 }
             }
         }
@@ -350,6 +384,11 @@ all_tuples_with_size!(impl_columns, 1, 16, T, t);
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Join<T>(pub T);
 pub type Prefix<T, C> = Join<((T,), C)>;
+impl<T, C> Prefix<T, C> {
+    pub fn new(prefix: T, rest: C) -> Self {
+        Self(((prefix,), rest))
+    }
+}
 macro_rules! impl_join {
     ((0, $T0:ident) $(,($i:tt, $T:ident))*) => {
 

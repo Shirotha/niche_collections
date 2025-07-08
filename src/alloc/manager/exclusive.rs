@@ -14,6 +14,23 @@ pub struct XHandle<'id, T: ?Sized> {
 
 // TODO: how to handle Debug?
 // #[derive(Debug)]
+pub struct XQuery<'id, 'a, C, Q: Query> {
+    result:   QueryResult<'a, Q>,
+    _manager: Id<'id>,
+    _marker:  PhantomData<fn() -> C>,
+}
+impl<'id, C, Q: Query> XQuery<'id, '_, C, Q> {
+    pub fn get(&self, handle: &XHandle<'id, C>) -> Q::Output<'_> {
+        assert!(Q::READONLY);
+        self.result.get(handle.index)
+    }
+    pub fn get_mut(&self, handle: &mut XHandle<'id, C>) -> Q::Output<'_> {
+        self.result.get(handle.index)
+    }
+}
+
+// TODO: how to handle Debug?
+// #[derive(Debug)]
 pub struct XManager<'id, K, C>
 where
     GlobalConfig<K, C>: Config,
@@ -104,6 +121,39 @@ where
         &mut self,
         handle: XHandle<'id, T>,
     ) -> Result<T, (XHandle<'id, T>, ManagerError)> {
+        self.0.store.remove(handle.index).map_err(|err| (handle, err.into()))
+    }
+}
+impl<'id, C, const REUSE: bool, V> Manager<'id, SoA<C>, Exclusive<REUSE, V>>
+where
+    C: Columns,
+    GlobalConfig<SoA<C>, Exclusive<REUSE, V>>:
+        for<'x> Config<Store: SoAStore<C>, Manager<'x> = XManager<'x, SoA<C>, Exclusive<REUSE, V>>>,
+{
+    pub fn query<Q: Query>(&self) -> MResult<XQuery<'id, '_, C, Q>> {
+        let result = self.0.store.get::<Q>()?;
+        Ok(XQuery { result, _manager: self.0.id, _marker: PhantomData })
+    }
+    pub fn insert_within_capacity(&mut self, data: C) -> Result<XHandle<'id, C>, C> {
+        self.0.store.insert_within_capacity(data).map(|index| XHandle {
+            index,
+            _manager: self.0.id,
+            _marker: PhantomData,
+        })
+    }
+}
+impl<'id, C, V> Manager<'id, SoA<C>, Exclusive<true, V>>
+where
+    C: Columns,
+    GlobalConfig<SoA<C>, Exclusive<true, V>>: for<'x> Config<
+            Store: ReusableSoAStore<C>,
+            Manager<'x> = XManager<'x, SoA<C>, Exclusive<true, V>>,
+        >,
+{
+    pub fn remove(
+        &mut self,
+        handle: XHandle<'id, C>,
+    ) -> Result<C, (XHandle<'id, C>, ManagerError)> {
         self.0.store.remove(handle.index).map_err(|err| (handle, err.into()))
     }
 }

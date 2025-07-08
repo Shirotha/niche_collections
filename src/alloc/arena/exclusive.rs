@@ -135,6 +135,51 @@ where
         manager!(mut self).remove(handle).map_err(|(handle, err)| (handle, err.into()))
     }
 }
+impl<'id, C, const REUSE: bool, V> Arena<'id, 'id, SoA<C>, Exclusive<REUSE, V>>
+where
+    C: Columns,
+    GlobalConfig<SoA<C>, Exclusive<REUSE, V>>: for<'x> Config<
+            Store: SoAStore<C>,
+            Manager<'x> = XManager<'x, SoA<C>, Exclusive<REUSE, V>>,
+            Arena<'x, 'x> = XArena<'x, SoA<C>, Exclusive<REUSE, V>>,
+        >,
+{
+    pub fn query<Q: Query>(&self) -> AResult<XQuery<'id, '_, C, Q>> {
+        Ok(manager!(ref self).query()?)
+    }
+    pub fn insert_within_capacity(&self, data: C) -> Result<XHandle<'id, C>, C> {
+        let _guard = self.0.alloc_lock.lock();
+        manager!(mut self).insert_within_capacity(data)
+    }
+    pub fn insert(&mut self, data: C) -> Result<XHandle<'id, C>, (C, ArenaError)> {
+        match self.0.manager.get_mut().insert_within_capacity(data) {
+            Ok(handle) => Ok(handle),
+            Err(data) => {
+                if let Err(err) = self.reserve(1) {
+                    return Err((data, err));
+                }
+                let Ok(handle) = self.insert_within_capacity(data) else {
+                    unreachable!("insert after reserve should always be successful")
+                };
+                Ok(handle)
+            },
+        }
+    }
+}
+impl<'id, C, V> Arena<'id, 'id, SoA<C>, Exclusive<true, V>>
+where
+    C: Columns,
+    GlobalConfig<SoA<C>, Exclusive<true, V>>: for<'x> Config<
+            Store: ReusableSoAStore<C>,
+            Manager<'x> = XManager<'x, SoA<C>, Exclusive<true, V>>,
+            Arena<'x, 'x> = XArena<'x, SoA<C>, Exclusive<true, V>>,
+        >,
+{
+    pub fn remove(&self, handle: XHandle<'id, C>) -> Result<C, (XHandle<'id, C>, ArenaError)> {
+        let _guard = self.0.alloc_lock.lock();
+        manager!(mut self).remove(handle).map_err(|(handle, err)| (handle, err.into()))
+    }
+}
 impl<'id, U, const REUSE: bool, V> Arena<'id, 'id, Slices<U>, Exclusive<REUSE, V>>
 where
     U: RawBytes,

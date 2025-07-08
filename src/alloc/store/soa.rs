@@ -19,6 +19,7 @@ impl ColumnsData {
 }
 
 // TODO: use this kinda structure for the other stores as well?
+// TODO: use this type as only freelist store (support both Typed and Mixed/Slices by using custom headers and specialized impls)
 #[derive(Debug)]
 pub struct SoAFreelistStore<C> {
     /// # Memory layout

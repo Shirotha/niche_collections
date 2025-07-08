@@ -65,6 +65,21 @@ macro_rules! impl_read {
                 Ok(manager!(ref self).get(map_handle!(handle<T> 'id -> 'man))?)
             }
         }
+        impl<'id, 'man, C, const REUSE: bool, H, V> $type<'_, 'id, 'man, SoA<C>, Versioned<REUSE, H, V>, H>
+        where
+            C: Columns,
+            H: Header,
+            GlobalConfig<SoA<C>, Versioned<REUSE, H, V>>: for<'x> Config<
+                    Store: SoAStore<Prefix<Version, C>>,
+                    Manager<'x> = VManager<'x, SoA<C>, Versioned<REUSE, H, V>>,
+                >,
+        {
+            pub fn query<Q: Query>(&self) -> AResult<VQuery<'id, '_, C, Q>> {
+                assert!(Q::READONLY);
+                let query = manager!(ref self).query()?;
+                Ok(map_query!(ref query<'_, C, Q> 'man -> 'id))
+            }
+        }
         impl<'id, 'man, U, const REUSE: bool, H, V> $type<'_, 'id, 'man, Slices<U>, Versioned<REUSE, H, V>, H>
         where
             U: RawBytes,
@@ -145,6 +160,32 @@ macro_rules! impl_write {
             ) -> AResult<[&mut T; N]> {
                 Ok(manager!(mut self)
                     .get_disjoint_mut(handles.map(|handle| map_handle!(handle<T> 'id -> 'man)))?)
+            }
+        }
+        impl<'id, 'man, C, const REUSE: bool, H, V> $type<'_, 'id, 'man, SoA<C>, Versioned<REUSE, H, V>, H>
+        where
+            C: Columns,
+            H: Header,
+            GlobalConfig<SoA<C>, Versioned<REUSE, H, V>>: for<'x> Config<
+                    Store: SoAStore<Prefix<Version, C>>,
+                    Manager<'x> = VManager<'x, SoA<C>, Versioned<REUSE, H, V>>,
+                >,
+        {
+            pub fn query_mut<Q: Query>(&mut self) -> AResult<VQueryMut<'id, '_, C, Q>> {
+                let query = manager!(mut self).query_mut()?;
+                Ok(map_query!(mut query<'_, C, Q> 'man -> 'id))
+            }
+            pub fn move_to<'to, M>(
+                &mut self,
+                _to: &mut Arena<'to, 'man, SoA<C>, Versioned<REUSE, H, V>>,
+                target: M::Container<'id>
+            ) -> AResult<M::Container<'to>>
+            where
+                M: MappableHandle<Data = C>
+            {
+                let handle = M::handle(&target);
+                let handle = manager!(mut self).bump_version(map_handle!(handle<C> 'id -> 'man))?;
+                Ok(M::update(target, map_handle!(handle<C> 'man -> 'to)))
             }
         }
         impl<'id, 'man, U, const REUSE: bool, H, V> $type<'_, 'id, 'man, Slices<U>, Versioned<REUSE, H, V>, H>
@@ -291,6 +332,48 @@ where
 {
     pub fn remove(&mut self, handle: VHandle<'id, T>) -> AResult<T> {
         Ok(manager!(mut self).remove(map_handle!(handle<T> 'id -> 'man))?)
+    }
+}
+impl<'id, 'man, C, const REUSE: bool, H, V>
+    VArenaAllocGuard<'_, 'id, 'man, SoA<C>, Versioned<REUSE, H, V>, H>
+where
+    C: Columns,
+    H: Header,
+    GlobalConfig<SoA<C>, Versioned<REUSE, H, V>>: for<'x> Config<
+            Store: SoAStore<Prefix<Version, C>>,
+            Manager<'x> = VManager<'x, SoA<C>, Versioned<REUSE, H, V>>,
+        >,
+{
+    pub fn insert_within_capacity(&mut self, data: C) -> Result<VHandle<'id, C>, C> {
+        let handle = manager!(mut self).insert_within_capacity(data)?;
+        Ok(map_handle!(handle<C> 'man -> 'id))
+    }
+    pub fn insert(&mut self, data: C) -> Result<VHandle<'id, C>, (C, ArenaError)> {
+        match self.insert_within_capacity(data) {
+            Ok(handle) => Ok(handle),
+            Err(data) => {
+                if let Err(err) = self.reserve(1) {
+                    return Err((data, err));
+                }
+                let Ok(handle) = self.insert_within_capacity(data) else {
+                    unreachable!("insert after reserve should always be successful")
+                };
+                Ok(handle)
+            },
+        }
+    }
+}
+impl<'id, 'man, C, H, V> VArenaAllocGuard<'_, 'id, 'man, SoA<C>, Versioned<true, H, V>, H>
+where
+    C: Columns,
+    H: Header,
+    GlobalConfig<SoA<C>, Versioned<true, H, V>>: for<'x> Config<
+            Store: ReusableSoAStore<Prefix<Version, C>>,
+            Manager<'x> = VManager<'x, SoA<C>, Versioned<true, H, V>>,
+        >,
+{
+    pub fn remove(&mut self, handle: VHandle<'id, C>) -> AResult<C> {
+        Ok(manager!(mut self).remove(map_handle!(handle<C> 'id -> 'man))?)
     }
 }
 impl<'id, 'man, U, const REUSE: bool, H, V>
