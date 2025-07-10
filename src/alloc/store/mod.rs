@@ -1,6 +1,7 @@
 use std::{
     alloc::{Layout, LayoutError},
     any::TypeId,
+    hash::{DefaultHasher, Hash, Hasher},
     marker::PhantomData,
     mem::{ManuallyDrop, MaybeUninit},
     ops::Range,
@@ -146,15 +147,29 @@ pub unsafe trait Query {
     where
         Self: 'a;
     fn build_cache(
-        column: &mut impl FnMut(TypeId, ColumnIndex) -> Option<NonNull<u8>>,
+        column: &mut impl FnMut(u64, ColumnIndex) -> Option<NonNull<u8>>,
     ) -> SResult<Self::Cache>;
 }
 pub enum ColumnIndex {
     Index(u8),
     Next,
 }
-// HACK: 'static constraint needed because of TypeId
-unsafe impl<T: 'static> Query for &T {
+// HACK: workaround for TypeId not working with non-static types
+pub unsafe trait TypeHash {
+    // TODO: change to const once stable
+    fn type_hash<H: Hasher>(state: &mut H);
+    fn default_type_hash() -> u64 {
+        let mut state = DefaultHasher::new();
+        Self::type_hash(&mut state);
+        state.finish()
+    }
+}
+unsafe impl<T: 'static> TypeHash for T {
+    fn type_hash<H: Hasher>(state: &mut H) {
+        TypeId::of::<T>().hash(state);
+    }
+}
+unsafe impl<T: TypeHash> Query for &T {
     const READONLY: bool = true;
 
     type Output<'a>
@@ -172,15 +187,14 @@ unsafe impl<T: 'static> Query for &T {
     }
 
     fn build_cache(
-        get_column: &mut impl FnMut(TypeId, ColumnIndex) -> Option<NonNull<u8>>,
+        get_column: &mut impl FnMut(u64, ColumnIndex) -> Option<NonNull<u8>>,
     ) -> SResult<Self::Cache> {
-        let ptr = get_column(TypeId::of::<T>(), ColumnIndex::Next)
+        let ptr = get_column(T::default_type_hash(), ColumnIndex::Next)
             .ok_or(StoreError::InvalidQuery("column not found"))?;
         Ok(ptr.cast())
     }
 }
-// HACK: 'static constraint needed because of TypeId
-unsafe impl<T: 'static> Query for &mut T {
+unsafe impl<T: TypeHash> Query for &mut T {
     const READONLY: bool = false;
 
     type Output<'a>
@@ -198,9 +212,9 @@ unsafe impl<T: 'static> Query for &mut T {
     }
 
     fn build_cache(
-        array: &mut impl FnMut(TypeId, ColumnIndex) -> Option<NonNull<u8>>,
+        array: &mut impl FnMut(u64, ColumnIndex) -> Option<NonNull<u8>>,
     ) -> SResult<Self::Cache> {
-        let ptr = array(TypeId::of::<T>(), ColumnIndex::Next)
+        let ptr = array(T::default_type_hash(), ColumnIndex::Next)
             .ok_or(StoreError::InvalidQuery("column not found"))?;
         Ok(ptr.cast())
     }
@@ -227,7 +241,7 @@ macro_rules! impl_query {
                 ($($T::get($c, index),)*)
             }
             fn build_cache(
-                array: &mut impl FnMut(TypeId, ColumnIndex) -> Option<NonNull<u8>>,
+                array: &mut impl FnMut(u64, ColumnIndex) -> Option<NonNull<u8>>,
             ) -> SResult<Self::Cache> {
                 Ok(($($T::build_cache(array)?,)*))
             }
@@ -287,7 +301,7 @@ pub unsafe trait Columns: Sized {
     /// `register` will be called exactly `COUNT` times.
     fn register_layout(
         count: Length,
-        register: &mut impl FnMut(TypeId, Layout),
+        register: &mut impl FnMut(u64, Layout),
     ) -> Result<(), LayoutError>;
     /// Moves itself to memory addresses provided by `next_column`.
     /// `next_column` will be called exactly `COUNT` times.
@@ -297,10 +311,12 @@ pub unsafe trait Columns: Sized {
     fn take(index: Index, next_column: &mut impl FnMut() -> NonNull<u8>) -> Self;
     /// Return reference to n-th row, as a freelist entry.
     /// `get_column` will only be called with values `0..COUNT`.
-    fn as_freelist_entry(
+    fn as_freelist_entry<'a>(
         index: Index,
-        get_column: &mut impl FnMut(usize) -> NonNull<u8>,
-    ) -> &mut Option<Index>;
+        get_column: &'a mut impl FnMut(usize) -> NonNull<u8>,
+    ) -> &'a mut Option<Index>
+    where
+        Self: 'a;
 }
 pub union FreelistEntry<T> {
     data: ManuallyDrop<T>,
@@ -308,23 +324,22 @@ pub union FreelistEntry<T> {
 }
 macro_rules! impl_columns {
     ($N:expr, ($T0:ident, $t0:ident) $(, ($T:ident, $t:ident))*) => {
-        // HACK: 'static constraint needed because of TypeId
-        unsafe impl<$T0: 'static, $($T: 'static),*> Columns for ($T0, $($T,)*) {
+        unsafe impl<$T0: TypeHash, $($T: TypeHash),*> Columns for ($T0, $($T,)*) {
             const COUNT: usize = $N;
 
             fn register_layout(
                 count: Length,
-                register: &mut impl FnMut(TypeId, Layout),
+                register: &mut impl FnMut(u64, Layout),
             ) -> Result<(), LayoutError> {
                 register(
-                    TypeId::of::<$T0>(),
+                    $T0::default_type_hash(),
                     Layout::from_size_align(
                         count as usize * size_of::<FreelistEntry<$T0>>(),
                         align_of::<FreelistEntry<$T0>>()
                     )?
                 );
                 $(register(
-                    TypeId::of::<$T>(),
+                    $T::default_type_hash(),
                     Layout::from_size_align(count as usize * size_of::<$T>(), align_of::<$T>())?
                 );)*
                 Ok(())
@@ -366,10 +381,13 @@ macro_rules! impl_columns {
                     },)*
                 )
             }
-            fn as_freelist_entry(
+            fn as_freelist_entry<'a>(
                 index: Index,
-                get_column: &mut impl FnMut(usize) -> NonNull<u8>,
-            ) -> &mut Option<Index> {
+                get_column: &'a mut impl FnMut(usize) -> NonNull<u8>,
+            ) -> &'a mut Option<Index>
+            where
+                Self: 'a
+            {
                 let column = get_column(0);
                 // SAFETY: column was registered to be of type FreelistEntry<$T0>
                 unsafe {
@@ -398,7 +416,7 @@ macro_rules! impl_join {
 
             fn register_layout(
                 count: Length,
-                register: &mut impl FnMut(TypeId, Layout),
+                register: &mut impl FnMut(u64, Layout),
             ) -> Result<(), LayoutError> {
                 $T0::register_layout(count, register)?;
                 $($T::register_layout(count, register)?;)*
@@ -421,10 +439,13 @@ macro_rules! impl_join {
                 ))
             }
 
-            fn as_freelist_entry(
+            fn as_freelist_entry<'a>(
                 index: Index,
-                get_column: &mut impl FnMut(usize) -> NonNull<u8>,
-            ) -> &mut Option<Index> {
+                get_column: &'a mut impl FnMut(usize) -> NonNull<u8>,
+            ) -> &'a mut Option<Index>
+            where
+                Self: 'a
+            {
                 $T0::as_freelist_entry(index, get_column)
             }
         }

@@ -8,12 +8,12 @@ use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ColumnsData {
-    pub typeid: TypeId,
+    pub typeid: u64,
     pub layout: Layout,
     pub offset: usize,
 }
 impl ColumnsData {
-    pub fn new(typeid: TypeId, layout: Layout) -> Self {
+    pub fn new(typeid: u64, layout: Layout) -> Self {
         Self { typeid, layout, offset: 0 }
     }
 }
@@ -76,7 +76,7 @@ where
 
     fn register_columns(capacity: Length) -> Result<(Vec<ColumnsData>, Layout), LayoutError> {
         let mut columns = Vec::with_capacity(C::COUNT);
-        C::register_layout(capacity, &mut |typeid: TypeId, layout: Layout| {
+        C::register_layout(capacity, &mut |typeid: u64, layout: Layout| {
             columns.push(ColumnsData::new(typeid, layout));
         })?;
         debug_assert_eq!(columns.len(), C::COUNT);
@@ -101,7 +101,7 @@ where
         let mut offset = Self::header_size(new_capacity);
         let mut old_size = Self::header_size(old_capacity);
         let mut align = align_of::<ColumnsData>();
-        C::register_layout(new_capacity, &mut |typeid: TypeId, layout: Layout| {
+        C::register_layout(new_capacity, &mut |typeid: u64, layout: Layout| {
             let column = unsafe { columns.as_mut() };
             assert_eq!(column.typeid, typeid);
             old_size = old_size.next_multiple_of(column.layout.align()) + column.layout.size();
@@ -134,7 +134,7 @@ where
 
     fn build_query<Q: Query>(&self) -> SResult<QueryResult<Q>> {
         let mut rep_cache = HashMap::with_capacity(C::COUNT);
-        let cache = Q::build_cache(&mut |typeid: TypeId, column: ColumnIndex| {
+        let cache = Q::build_cache(&mut |typeid: u64, column: ColumnIndex| {
             let mut rep = match column {
                 ColumnIndex::Index(i) => i,
                 ColumnIndex::Next => {

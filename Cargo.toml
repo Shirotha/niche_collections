@@ -23,6 +23,8 @@ serde = ["dep:serde", "parking_lot/serde", "nonmax/serde"]
 hardware-lock-elision = ["parking_lot/hardware-lock-elision"]
 
 [dependencies]
+derive_macros = { version = "0.1.0", path = "crates/derive_macros" }
+
 generativity = "1.1.0"
 nonmax = "0.5.5"
 parking_lot = "0.12.3"
