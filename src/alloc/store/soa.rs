@@ -1,6 +1,5 @@
 use std::{
     alloc::{Layout, alloc, dealloc, handle_alloc_error},
-    collections::HashMap,
     ptr::NonNull,
 };
 
@@ -132,33 +131,6 @@ where
         Ok(buffer)
     }
 
-    fn build_query<Q: Query>(&self) -> SResult<QueryResult<Q>> {
-        let mut rep_cache = HashMap::with_capacity(C::COUNT);
-        let cache = Q::build_cache(&mut |typeid: TypeId, column: ColumnIndex| {
-            let mut rep = match column {
-                ColumnIndex::Index(i) => i,
-                ColumnIndex::Next => {
-                    let rep = rep_cache.entry(typeid).or_insert(0);
-                    let result = *rep;
-                    *rep += 1;
-                    result
-                },
-            };
-            let columns = self.buffer.cast::<ColumnsData>();
-            for i in 0..C::COUNT {
-                let column = unsafe { columns.add(i).as_ref() };
-                if column.typeid == typeid {
-                    match rep.checked_sub(1) {
-                        Some(new_rep) => rep = new_rep,
-                        None => return Some(unsafe { self.buffer.add(column.offset) }),
-                    }
-                }
-            }
-            None
-        })?;
-        Ok(QueryResult(cache, PhantomData))
-    }
-
     pub fn new() -> Self {
         Self::with_capacity(Self::DEFAULT_CAPACITY)
     }
@@ -263,18 +235,7 @@ where
         Ok(index)
     }
 }
-impl<C> Queryable for SoAFreelistStore<C>
-where
-    C: Columns,
-{
-    fn get<Q: Query>(&self) -> SResult<QueryResult<Q>> {
-        assert!(Q::READONLY);
-        Self::build_query(self)
-    }
-    fn get_mut<Q: Query>(&mut self) -> SResult<QueryResult<Q>> {
-        Self::build_query(self)
-    }
-}
+
 impl<C> SoAStore<C> for SoAFreelistStore<C> where C: Columns {}
 
 impl<C> Remove<Single<C>> for SoAFreelistStore<C>

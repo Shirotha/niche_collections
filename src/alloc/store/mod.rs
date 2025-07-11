@@ -9,7 +9,7 @@ use std::{
 };
 
 use thiserror::Error;
-use variadics_please::{all_tuples, all_tuples_enumerated, all_tuples_with_size};
+use variadics_please::{all_tuples_enumerated, all_tuples_with_size};
 
 use super::*;
 
@@ -41,8 +41,6 @@ pub enum StoreError {
     Narrow(Length, Length),
     #[error("Invalid columns layout: {0}")]
     InvalidLayout(&'static str),
-    #[error("Invalid query: {0}")]
-    InvalidQuery(&'static str),
 }
 pub type SResult<T> = Result<T, StoreError>;
 
@@ -130,124 +128,6 @@ pub trait Resizable {
     fn widen(&mut self, new_capacity: Length) -> SResult<()>;
     fn clear(&mut self);
 }
-// TODO: tie this together with Element
-/// # Safety
-/// This trait is responsible to construct an `Output`
-/// using only raw pointers, this is inherently unsafe.
-pub unsafe trait Query {
-    const READONLY: bool;
-
-    type Output<'a>
-    where
-        Self: 'a;
-    type Cache;
-
-    fn get<'a>(cache: &'a Self::Cache, index: Index) -> Self::Output<'a>
-    where
-        Self: 'a;
-    fn build_cache(
-        column: &mut impl FnMut(TypeId, ColumnIndex) -> Option<NonNull<u8>>,
-    ) -> SResult<Self::Cache>;
-}
-pub enum ColumnIndex {
-    Index(u8),
-    Next,
-}
-// HACK: 'static constraint needed because of TypeId
-unsafe impl<T: 'static> Query for &T {
-    const READONLY: bool = true;
-
-    type Output<'a>
-        = &'a T
-    where
-        Self: 'a;
-    type Cache = NonNull<T>;
-
-    fn get<'a>(cache: &'a Self::Cache, index: Index) -> Self::Output<'a>
-    where
-        Self: 'a,
-    {
-        // SAFETY: cache is a column of type T
-        unsafe { cache.add(index.get() as usize).as_ref() }
-    }
-
-    fn build_cache(
-        get_column: &mut impl FnMut(TypeId, ColumnIndex) -> Option<NonNull<u8>>,
-    ) -> SResult<Self::Cache> {
-        let ptr = get_column(TypeId::of::<T>(), ColumnIndex::Next)
-            .ok_or(StoreError::InvalidQuery("column not found"))?;
-        Ok(ptr.cast())
-    }
-}
-// HACK: 'static constraint needed because of TypeId
-unsafe impl<T: 'static> Query for &mut T {
-    const READONLY: bool = false;
-
-    type Output<'a>
-        = &'a mut T
-    where
-        Self: 'a;
-    type Cache = NonNull<T>;
-
-    fn get<'a>(cache: &'a Self::Cache, index: Index) -> Self::Output<'a>
-    where
-        Self: 'a,
-    {
-        // SAFETY: cache is a column of type T
-        unsafe { cache.add(index.get() as usize).as_mut() }
-    }
-
-    fn build_cache(
-        array: &mut impl FnMut(TypeId, ColumnIndex) -> Option<NonNull<u8>>,
-    ) -> SResult<Self::Cache> {
-        let ptr = array(TypeId::of::<T>(), ColumnIndex::Next)
-            .ok_or(StoreError::InvalidQuery("column not found"))?;
-        Ok(ptr.cast())
-    }
-}
-// TODO: make a Nth{Mut}<N, T> type that accesses ColumnIndex::Index(N)
-// TODO: make a Bits{Mut}<N> type that accesses bits of a BitArray (use AtomicU8 as backing type)
-macro_rules! impl_query {
-    ($(($T:ident, $c:ident)),*) => {
-        unsafe impl<$($T: Query),*> Query for ($($T,)*) {
-            #![allow(unused_variables,  clippy::unused_unit, reason = "needed for the 0-tuple case")]
-
-            const READONLY: bool = true $(&& $T::READONLY)*;
-
-            type Output<'a>
-                = ($($T::Output<'a>,)*)
-            where
-                Self: 'a;
-            type Cache = ($($T::Cache,)*);
-
-            fn get<'a>(($($c,)*): &'a Self::Cache, index: Index) -> Self::Output<'a>
-            where
-                Self: 'a
-            {
-                ($($T::get($c, index),)*)
-            }
-            fn build_cache(
-                array: &mut impl FnMut(TypeId, ColumnIndex) -> Option<NonNull<u8>>,
-            ) -> SResult<Self::Cache> {
-                Ok(($($T::build_cache(array)?,)*))
-            }
-        }
-    };
-}
-all_tuples!(impl_query, 0, 16, T, c);
-
-#[derive(Debug)]
-pub struct QueryResult<'a, Q: Query>(Q::Cache, PhantomData<&'a Q::Cache>);
-impl<'a, Q: Query> QueryResult<'a, Q> {
-    pub fn get(&self, index: Index) -> Q::Output<'_> {
-        Q::get(&self.0, index)
-    }
-}
-pub trait Queryable {
-    // TODO: constrain with `READONLY = true` once stable
-    fn get<Q: Query>(&self) -> SResult<QueryResult<Q>>;
-    fn get_mut<Q: Query>(&mut self) -> SResult<QueryResult<Q>>;
-}
 
 // TODO: these marker traits should be automatically implemented for all applicable types
 // - convert to trait alias, or
@@ -256,7 +136,7 @@ pub trait Store<T>: Get<Single<T>> + Insert<Single<T>> + Resizable {}
 pub trait ReusableStore<T>: Store<T> + Remove<Single<T>> {}
 pub trait MultiStore<T>: Get<Multi<T>> + InsertIndirect<Multi<T>> + Resizable {}
 pub trait ReusableMultiStore<T>: MultiStore<T> + RemoveIndirect<Multi<T>> {}
-pub trait SoAStore<C: Columns>: Queryable + Insert<Single<C>> + Resizable {}
+pub trait SoAStore<C: Columns>: Insert<Single<C>> + Resizable {}
 pub trait ReusableSoAStore<C: Columns>: SoAStore<C> + Remove<Single<C>> {}
 
 #[derive(Debug)]

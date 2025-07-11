@@ -144,9 +144,6 @@ where
             Arena<'x, 'x> = XArena<'x, SoA<C>, Exclusive<REUSE, V>>,
         >,
 {
-    pub fn query<Q: Query>(&self) -> AResult<XQuery<'id, '_, C, Q>> {
-        Ok(manager!(ref self).query()?)
-    }
     pub fn insert_within_capacity(&self, data: C) -> Result<XHandle<'id, C>, C> {
         let _guard = self.0.alloc_lock.lock();
         manager!(mut self).insert_within_capacity(data)

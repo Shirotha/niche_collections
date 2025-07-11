@@ -74,11 +74,6 @@ macro_rules! impl_read {
                     Manager<'x> = VManager<'x, SoA<C>, Versioned<REUSE, H, V>>,
                 >,
         {
-            pub fn query<Q: Query>(&self) -> AResult<VQuery<'id, '_, C, Q>> {
-                assert!(Q::READONLY);
-                let query = manager!(ref self).query()?;
-                Ok(map_query!(ref query<'_, C, Q> 'man -> 'id))
-            }
         }
         impl<'id, 'man, U, const REUSE: bool, H, V> $type<'_, 'id, 'man, Slices<U>, Versioned<REUSE, H, V>, H>
         where
@@ -171,10 +166,6 @@ macro_rules! impl_write {
                     Manager<'x> = VManager<'x, SoA<C>, Versioned<REUSE, H, V>>,
                 >,
         {
-            pub fn query_mut<Q: Query>(&mut self) -> AResult<VQueryMut<'id, '_, C, Q>> {
-                let query = manager!(mut self).query_mut()?;
-                Ok(map_query!(mut query<'_, C, Q> 'man -> 'id))
-            }
             pub fn move_to<'to, M>(
                 &mut self,
                 _to: &mut Arena<'to, 'man, SoA<C>, Versioned<REUSE, H, V>>,
