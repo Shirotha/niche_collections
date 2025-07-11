@@ -7,6 +7,7 @@ use std::{
     slice::GetDisjointMutError,
 };
 
+use paste::paste;
 use thiserror::Error;
 use variadics_please::all_tuples_enumerated;
 
@@ -163,9 +164,14 @@ impl<T> Drop for InsertIndirectGuard<'_, T> {
 pub unsafe trait Columns: Sized {
     const COUNT: usize;
 
-    type Ref<'a>
+    type Ref<'a, F>
     where
-        Self: 'a;
+        Self: 'a,
+        F: 'a;
+    type Mut<'a, F>
+    where
+        Self: 'a,
+        F: 'a;
 
     /// Registers each column with the store.
     /// `register` will be called exactly `COUNT` times.
@@ -181,8 +187,13 @@ pub unsafe trait Columns: Sized {
     #[expect(clippy::mut_from_ref, reason = "trait user is responsible for this")]
     fn as_freelist_entry(index: Index, columns: &[NonNull<u8>]) -> &mut Option<Index>;
     /// Create Ref object to act as an accessor.
-    /// This will be called inside of Deref(Mut), so this should be cheap.
-    fn make_ref<'a>(columns: &'a [NonNull<u8>]) -> Self::Ref<'a>
+    /// This will be called inside of Deref, so this should be cheap.
+    fn make_ref<'a, F>(columns: &'a [NonNull<u8>], validate: &'a F) -> Self::Ref<'a, F>
+    where
+        Self: 'a;
+    /// Create Mut object to act as a mutable accessor.
+    /// This will be called inside of DerefMut, so this should be cheap.
+    fn make_mut<'a, F>(columns: &'a [NonNull<u8>], validate: &'a F) -> Self::Mut<'a, F>
     where
         Self: 'a;
 }
@@ -190,15 +201,76 @@ pub union FreelistEntry<T> {
     _data: ManuallyDrop<T>,
     _next: Option<Index>,
 }
-pub struct TupleRef<'a, T>(&'a [NonNull<u8>], PhantomData<&'a T>);
+pub struct TupleRef<'a, T, F>(&'a [NonNull<u8>], &'a F, PhantomData<&'a T>);
+pub struct TupleMut<'a, T, F>(&'a [NonNull<u8>], &'a F, PhantomData<&'a T>);
 macro_rules! impl_columns {
     ((0, $T0:ident, $t0:ident) $(, ($i:tt, $T:ident, $t:ident))*) => {
+        paste! {
+            impl<$T0, $($T,)* F> TupleRef<'_, ($T0, $($T,)*), F>
+            where
+                F: Fn(Index) -> SResult<()>
+            {
+                pub fn col0(&self, index: Index) -> SResult<&$T0> {
+                    self.1(index)?;
+                    Ok(unsafe {
+                        self.0[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
+                            .cast::<$T0>().as_ref()
+                    })
+                }
+                $(
+                    pub fn [<col $i>](&self, index: Index) -> SResult<&$T> {
+                        self.1(index)?;
+                        Ok(unsafe {
+                            self.0[$i].cast::<$T>().add(index.get() as usize).as_ref()
+                        })
+                    }
+                )*
+            }
+            impl<$T0, $($T,)* F> TupleMut<'_, ($T0, $($T,)*), F>
+            where
+                F: Fn(Index) -> SResult<()>
+            {
+                pub fn col0(&self, index: Index) -> SResult<&$T0> {
+                    self.1(index)?;
+                    Ok(unsafe {
+                        self.0[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
+                            .cast::<$T0>().as_ref()
+                    })
+                }
+                pub fn col0_mut(&mut self, index: Index) -> SResult<&mut $T0> {
+                    self.1(index)?;
+                    Ok(unsafe {
+                        self.0[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
+                            .cast::<$T0>().as_mut()
+                    })
+                }
+                $(
+                    pub fn [<col $i>](&self, index: Index) -> SResult<&$T> {
+                        self.1(index)?;
+                        Ok(unsafe {
+                            self.0[$i].cast::<$T>().add(index.get() as usize).as_ref()
+                        })
+                    }
+                    pub fn [<col $i _mut>](&mut self, index: Index) -> SResult<&mut $T> {
+                        self.1(index)?;
+                        Ok(unsafe {
+                            self.0[$i].cast::<$T>().add(index.get() as usize).as_mut()
+                        })
+                    }
+                )*
+            }
+        }
         unsafe impl<$T0, $($T),*> Columns for ($T0, $($T,)*) {
             const COUNT: usize = 1 $(+{$i;1})*;
 
-            type Ref<'a> = TupleRef<'a, ($($T,)*)>
+            type Ref<'a, F> = TupleRef<'a, ($T0, $($T,)*), F>
             where
-                Self: 'a;
+                Self: 'a,
+                F: 'a;
+            type Mut<'a, F> = TupleMut<'a, ($T0, $($T,)*), F>
+            where
+                Self: 'a,
+                F: 'a;
 
             fn register_layout(
                 rows: Length,
@@ -250,11 +322,19 @@ macro_rules! impl_columns {
                         .add(index.get() as usize).cast::<Option<Index>>().as_mut()
                 }
             }
-            fn make_ref<'a>(columns: &'a [NonNull<u8>]) -> Self::Ref<'a>
+            fn make_ref<'a, F>(columns: &'a [NonNull<u8>], validate: &'a F) -> Self::Ref<'a, F>
             where
                 Self: 'a,
+                F: 'a,
             {
-                TupleRef(columns, PhantomData)
+                TupleRef(columns, validate, PhantomData)
+            }
+            fn make_mut<'a, F>(columns: &'a [NonNull<u8>], validate: &'a F) -> Self::Mut<'a, F>
+            where
+                Self: 'a,
+                F: 'a,
+            {
+                TupleMut(columns, validate, PhantomData)
             }
         }
     };
@@ -268,19 +348,79 @@ impl<T, C> Prefix<T, C> {
         Self(((prefix,), rest))
     }
 }
-pub struct JoinRef<'a, T>(&'a [NonNull<u8>], PhantomData<&'a T>);
+pub struct JoinRef<'a, T, F>(&'a [NonNull<u8>], &'a F, PhantomData<&'a T>);
+pub struct JoinMut<'a, T, F>(&'a [NonNull<u8>], &'a F, PhantomData<&'a T>);
 macro_rules! impl_join {
-    ((0, $T0:ident) $(,($i:tt, $T:ident))*) => {
-
+    ((0, $T0:ident) $(,($i:tt, $T:ident))*) => { paste! {
+        impl<$T0: Columns, $($T: Columns,)* F> JoinRef<'_, ($T0, $($T,)*), F>
+        where
+            F: Fn(Index) -> SResult<()>
+        {
+            const COUNTS: [usize; 1 $(+{$i;1})*] = [
+                $T0::COUNT,
+                $($T::COUNT),*
+            ];
+            const fn offset(mut i: usize) -> usize {
+                let mut result = 0;
+                while i > 0 {
+                    i -= 1;
+                    result  += Self::COUNTS[i];
+                }
+                result
+            }
+            pub fn part0(&self) -> $T0::Ref<'_, F> {
+                $T0::make_ref(&self.0[0..$T0::COUNT], &self.1)
+            }
+            $(
+                pub fn [<part $i>](&self) -> $T::Ref<'_, F> {
+                    $T::make_ref(&self.0[Self::offset($i)..Self::offset($i + 1)], &self.1)
+                }
+            )*
+        }
+        impl<$T0: Columns, $($T: Columns,)* F> JoinMut<'_, ($T0, $($T,)*), F>
+        where
+            F: Fn(Index) -> SResult<()>
+        {
+            const COUNTS: [usize; 1 $(+{$i;1})*] = [
+                $T0::COUNT,
+                $($T::COUNT),*
+            ];
+            const fn offset(mut i: usize) -> usize {
+                let mut result = 0;
+                while i > 0 {
+                    i -= 1;
+                    result  += Self::COUNTS[i];
+                }
+                result
+            }
+            pub fn part0(&self) -> $T0::Ref<'_, F> {
+                $T0::make_ref(&self.0[0..$T0::COUNT], &self.1)
+            }
+            pub fn part0_mut(&mut self) -> $T0::Mut<'_, F> {
+                $T0::make_mut(&self.0[0..$T0::COUNT], &self.1)
+            }
+            $(
+                pub fn [<part $i>](&self) -> $T::Ref<'_, F> {
+                    $T::make_ref(&self.0[Self::offset($i)..Self::offset($i + 1)], &self.1)
+                }
+                pub fn [<part $i _mut>](&mut self) -> $T::Mut<'_, F> {
+                    $T::make_mut(&self.0[Self::offset($i)..Self::offset($i + 1)], &self.1)
+                }
+            )*
+        }
         unsafe impl<$T0: Columns, $($T: Columns),*> Columns for Join<($T0, $($T,)*)>
         {
             #![allow(unused_assignments)]
             const COUNT: usize = $T0::COUNT $(+ $T::COUNT)*;
 
-            // TODO: what type to use
-            type Ref<'a> = JoinRef<'a, ($($T,)*)>
+            type Ref<'a, F> = JoinRef<'a, ($T0, $($T,)*), F>
             where
-                Self: 'a;
+                Self: 'a,
+                F: 'a;
+            type Mut<'a, F> = JoinMut<'a, ($T0, $($T,)*), F>
+            where
+                Self: 'a,
+                F: 'a;
 
             fn register_layout(
                 count: Length,
@@ -316,13 +456,21 @@ macro_rules! impl_join {
             ) -> &mut Option<Index> {
                 $T0::as_freelist_entry(index, &columns[0..$T0::COUNT])
             }
-            fn make_ref<'a>(columns: &'a [NonNull<u8>]) -> Self::Ref<'a>
+            fn make_ref<'a, F>(columns: &'a [NonNull<u8>], validate: &'a F) -> Self::Ref<'a, F>
             where
                 Self: 'a,
+                F: 'a
             {
-                JoinRef(columns, PhantomData)
+                JoinRef(columns, validate, PhantomData)
+            }
+            fn make_mut<'a, F>(columns: &'a [NonNull<u8>], validate: &'a F) -> Self::Mut<'a, F>
+            where
+                Self: 'a,
+                F: 'a
+            {
+                JoinMut(columns, validate, PhantomData)
             }
         }
-    };
+    }};
 }
 all_tuples_enumerated!(impl_join, 2, 16, T);
