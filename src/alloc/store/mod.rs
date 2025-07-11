@@ -1,6 +1,5 @@
 use std::{
     alloc::{Layout, LayoutError},
-    any::TypeId,
     marker::PhantomData,
     mem::{ManuallyDrop, MaybeUninit},
     ops::Range,
@@ -9,7 +8,7 @@ use std::{
 };
 
 use thiserror::Error;
-use variadics_please::{all_tuples_enumerated, all_tuples_with_size};
+use variadics_please::all_tuples_enumerated;
 
 use super::*;
 
@@ -160,107 +159,107 @@ impl<T> Drop for InsertIndirectGuard<'_, T> {
 /// This trait is responsible to register its own memory layout
 /// and move values in and out of a store
 /// using only raw pointers, this is inherently unsafe.
+// TODO: change columns slice to COUNT sized array once stable
 pub unsafe trait Columns: Sized {
     const COUNT: usize;
 
+    type Ref<'a>
+    where
+        Self: 'a;
+
     /// Registers each column with the store.
     /// `register` will be called exactly `COUNT` times.
-    fn register_layout(
-        count: Length,
-        register: &mut impl FnMut(TypeId, Layout),
-    ) -> Result<(), LayoutError>;
+    fn register_layout(rows: Length, register: &mut impl FnMut(Layout)) -> Result<(), LayoutError>;
     /// Moves itself to memory addresses provided by `next_column`.
     /// `next_column` will be called exactly `COUNT` times.
-    fn move_into(self, index: Index, next_column: &mut impl FnMut() -> NonNull<u8>);
+    fn move_into(self, index: Index, columns: &[NonNull<u8>]);
     /// Loads itself from memory addresses provided by `next_column`.
     /// `next_column` will be called exactly `COUNT` times.
-    fn take(index: Index, next_column: &mut impl FnMut() -> NonNull<u8>) -> Self;
+    fn take(index: Index, columns: &[NonNull<u8>]) -> Self;
     /// Return reference to n-th row, as a freelist entry.
     /// `get_column` will only be called with values `0..COUNT`.
-    fn as_freelist_entry(
-        index: Index,
-        get_column: &mut impl FnMut(usize) -> NonNull<u8>,
-    ) -> &mut Option<Index>;
+    #[expect(clippy::mut_from_ref, reason = "trait user is responsible for this")]
+    fn as_freelist_entry(index: Index, columns: &[NonNull<u8>]) -> &mut Option<Index>;
+    /// Create Ref object to act as an accessor.
+    /// This will be called inside of Deref(Mut), so this should be cheap.
+    fn make_ref<'a>(columns: &'a [NonNull<u8>]) -> Self::Ref<'a>
+    where
+        Self: 'a;
 }
 pub union FreelistEntry<T> {
-    data: ManuallyDrop<T>,
-    next: Option<Index>,
+    _data: ManuallyDrop<T>,
+    _next: Option<Index>,
 }
+pub struct TupleRef<'a, T>(&'a [NonNull<u8>], PhantomData<&'a T>);
 macro_rules! impl_columns {
-    ($N:expr, ($T0:ident, $t0:ident) $(, ($T:ident, $t:ident))*) => {
-        // HACK: 'static constraint needed because of TypeId
-        unsafe impl<$T0: 'static, $($T: 'static),*> Columns for ($T0, $($T,)*) {
-            const COUNT: usize = $N;
+    ((0, $T0:ident, $t0:ident) $(, ($i:tt, $T:ident, $t:ident))*) => {
+        unsafe impl<$T0, $($T),*> Columns for ($T0, $($T,)*) {
+            const COUNT: usize = 1 $(+{$i;1})*;
+
+            type Ref<'a> = TupleRef<'a, ($($T,)*)>
+            where
+                Self: 'a;
 
             fn register_layout(
-                count: Length,
-                register: &mut impl FnMut(TypeId, Layout),
+                rows: Length,
+                register: &mut impl FnMut(Layout),
             ) -> Result<(), LayoutError> {
-                register(
-                    TypeId::of::<$T0>(),
-                    Layout::from_size_align(
-                        count as usize * size_of::<FreelistEntry<$T0>>(),
-                        align_of::<FreelistEntry<$T0>>()
-                    )?
-                );
-                $(register(
-                    TypeId::of::<$T>(),
-                    Layout::from_size_align(count as usize * size_of::<$T>(), align_of::<$T>())?
-                );)*
+                register(Layout::from_size_align(
+                    rows as usize * size_of::<FreelistEntry<$T0>>(),
+                    align_of::<FreelistEntry<$T0>>()
+                )?);
+                $(register(Layout::from_size_align(
+                    rows as usize * size_of::<$T>(),
+                    align_of::<$T>()
+                )?);)*
                 Ok(())
             }
-            fn move_into(
-                self,
-                index: Index,
-                next_column: &mut impl FnMut() -> NonNull<u8>,
-            ) {
+            fn move_into(self, index: Index, columns: &[NonNull<u8>]) {
                 let ($t0, $($t,)*) = self;
                 {
-                    let column = next_column();
-                    // SAFETY: column was registered to be of type FreelistEntry<$T0>
+                    // SAFETY: column 0 was registered to be of type FreelistEntry<$T0>
                     unsafe {
-                        column.cast::<FreelistEntry<$T0>>().add(index.get() as usize)
-                            .write(FreelistEntry { data: ManuallyDrop::new($t0) })
+                        columns[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
+                            .cast::<$T0>().write($t0)
                     };
                 }
                 $({
-                    let column = next_column();
-                    // SAFETY: column was registered to be of type $T
-                    unsafe { column.cast::<$T>().add(index.get() as usize).write($t) };
+                    // SAFETY: column $i was registered to be of type $T
+                    unsafe { columns[$i].cast::<$T>().add(index.get() as usize).write($t) };
                 })*
             }
-            fn take(index: Index, next_column: &mut impl FnMut() -> NonNull<u8>) -> Self {
+            fn take(index: Index, columns: &[NonNull<u8>]) -> Self {
                 (
                     {
-                        let column = next_column();
-                        // SAFETY: column was registered to be of type FreelistEntry<$T0>
+                        // SAFETY: column 0 was registered to be of type FreelistEntry<$T0> and holds a $T0
                         unsafe {
-                            ManuallyDrop::take(&mut column.cast::<FreelistEntry<$T0>>()
-                                .add(index.get() as usize).read().data)
+                            columns[0].cast::<FreelistEntry<$T0>>()
+                                .add(index.get() as usize).cast::<$T0>().read()
                         }
                     },
                     $({
-                        let column = next_column();
-                        // SAFETY: column was registered to be of type $T
-                        unsafe { column.cast::<$T>().add(index.get() as usize).read() }
+                        // SAFETY: column $i was registered to be of type $T
+                        unsafe { columns[$i].cast::<$T>().add(index.get() as usize).read() }
                     },)*
                 )
             }
-            fn as_freelist_entry(
-                index: Index,
-                get_column: &mut impl FnMut(usize) -> NonNull<u8>,
-            ) -> &mut Option<Index> {
-                let column = get_column(0);
-                // SAFETY: column was registered to be of type FreelistEntry<$T0>
+            fn as_freelist_entry(index: Index, columns: &[NonNull<u8>]) -> &mut Option<Index> {
+                // SAFETY: column 0 was registered to be of type FreelistEntry<$T0> and holds a Option<Index>
                 unsafe {
-                    &mut column.cast::<FreelistEntry<$T0>>()
-                        .add(index.get() as usize).as_mut().next
+                    columns[0].cast::<FreelistEntry<$T0>>()
+                        .add(index.get() as usize).cast::<Option<Index>>().as_mut()
                 }
+            }
+            fn make_ref<'a>(columns: &'a [NonNull<u8>]) -> Self::Ref<'a>
+            where
+                Self: 'a,
+            {
+                TupleRef(columns, PhantomData)
             }
         }
     };
 }
-all_tuples_with_size!(impl_columns, 1, 16, T, t);
+all_tuples_enumerated!(impl_columns, 1, 16, T, t);
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Join<T>(pub T);
 pub type Prefix<T, C> = Join<((T,), C)>;
@@ -269,45 +268,61 @@ impl<T, C> Prefix<T, C> {
         Self(((prefix,), rest))
     }
 }
+pub struct JoinRef<'a, T>(&'a [NonNull<u8>], PhantomData<&'a T>);
 macro_rules! impl_join {
     ((0, $T0:ident) $(,($i:tt, $T:ident))*) => {
 
         unsafe impl<$T0: Columns, $($T: Columns),*> Columns for Join<($T0, $($T,)*)>
         {
+            #![allow(unused_assignments)]
             const COUNT: usize = $T0::COUNT $(+ $T::COUNT)*;
+
+            // TODO: what type to use
+            type Ref<'a> = JoinRef<'a, ($($T,)*)>
+            where
+                Self: 'a;
 
             fn register_layout(
                 count: Length,
-                register: &mut impl FnMut(TypeId, Layout),
+                register: &mut impl FnMut(Layout),
             ) -> Result<(), LayoutError> {
                 $T0::register_layout(count, register)?;
                 $($T::register_layout(count, register)?;)*
                 Ok(())
             }
-
             fn move_into(
                 self,
                 index: Index,
-                next_column: &mut impl FnMut() -> NonNull<u8>,
+                columns: &[NonNull<u8>],
             ) {
-                self.0.0.move_into(index, next_column);
-                $(self.0.$i.move_into(index, next_column);)*
+                self.0.0.move_into(index, &columns[0..$T0::COUNT]);
+                let mut i0 = $T0::COUNT;
+                $({
+                    self.0.$i.move_into(index, &columns[i0..i0+$T::COUNT]);
+                    i0 += $T::COUNT;
+                })*
             }
-
-            fn take(index: Index, next_column: &mut impl FnMut() -> NonNull<u8>) -> Self {
+            fn take(index: Index, columns: &[NonNull<u8>]) -> Self {
+                let mut offsets = [$T0::COUNT; 1 $(+{$i;1})*];
+                $(offsets[$i] = offsets[$i - 1] + $T::COUNT;)*
                 Self((
-                    $T0::take(index, next_column),
-                    $($T::take(index, next_column),)*
+                    $T0::take(index, &columns[0..$T0::COUNT]),
+                    $($T::take(index, &columns[offsets[$i - 1]..offsets[$i]]),)*
                 ))
             }
-
             fn as_freelist_entry(
                 index: Index,
-                get_column: &mut impl FnMut(usize) -> NonNull<u8>,
+                columns: &[NonNull<u8>],
             ) -> &mut Option<Index> {
-                $T0::as_freelist_entry(index, get_column)
+                $T0::as_freelist_entry(index, &columns[0..$T0::COUNT])
+            }
+            fn make_ref<'a>(columns: &'a [NonNull<u8>]) -> Self::Ref<'a>
+            where
+                Self: 'a,
+            {
+                JoinRef(columns, PhantomData)
             }
         }
     };
 }
-all_tuples_enumerated!(impl_join, 1, 16, T);
+all_tuples_enumerated!(impl_join, 2, 16, T);

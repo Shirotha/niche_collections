@@ -1,29 +1,19 @@
 use std::{
     alloc::{Layout, alloc, dealloc, handle_alloc_error},
     ptr::NonNull,
+    slice,
 };
 
 use super::*;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct ColumnsData {
-    pub typeid: TypeId,
-    pub layout: Layout,
-    pub offset: usize,
-}
-impl ColumnsData {
-    pub fn new(typeid: TypeId, layout: Layout) -> Self {
-        Self { typeid, layout, offset: 0 }
-    }
-}
 
 // TODO: use this kinda structure for the other stores as well?
 // TODO: use this type as only freelist store (support both Typed and Mixed/Slices by using custom headers and specialized impls)
 #[derive(Debug)]
 pub struct SoAFreelistStore<C> {
     /// # Memory layout
-    /// - column data: `0`: `[ColumnsData; C::COUNT]`
-    /// - occupation: `size_of(ColumnsData) * cols`: `[u8; cap.div_ceil(8)]`
+    /// - column pointers: `0`: `[NonNull<u8>; C::COUNT]`
+    /// - layouts: `size_of(NonNull<u8>) * C::COUNT`: `[Layout; C::COUNT]`
+    /// - occupation table: `(size_of(NonNull<u8>) + size_of(Layout)) * C::COUNT`: `[u8; cap.div_ceil(8)]`
     /// - for each columns:
     ///   - `+ size_of(last column).next_mul(align_of(this column))`: `size of(this column)`
     buffer:    NonNull<u8>,
@@ -41,46 +31,89 @@ where
         Self::new()
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Header {
+    offset: usize,
+    layout: Layout,
+}
+impl Header {
+    fn new(layout: Layout) -> Self {
+        Self { offset: 0, layout }
+    }
+}
 impl<C> SoAFreelistStore<C>
 where
     C: Columns,
 {
     const DEFAULT_CAPACITY: Length = 16;
 
+    const fn header_align() -> usize {
+        align_of::<(NonNull<u8>, Layout)>()
+    }
+    // TODO: replace with C::COUNT sized array once stable
+    const fn columns_ptr(&self) -> NonNull<NonNull<u8>> {
+        // SAFETY: buffer holds the columns array at this point
+        self.buffer.cast::<NonNull<u8>>()
+    }
+    /// # Safety
+    /// This will give mutable access to the columns header wihout checks.
+    #[expect(clippy::mut_from_ref, reason = "needed to access in parallel with layout")]
+    const unsafe fn columns(&self) -> &mut [NonNull<u8>] {
+        // SAFETY: buffer holds the columns array at this point
+        unsafe { slice::from_raw_parts_mut(self.columns_ptr().as_mut(), C::COUNT) }
+    }
     const fn columns_size() -> usize {
-        C::COUNT * size_of::<ColumnsData>()
+        C::COUNT * size_of::<NonNull<u8>>()
+    }
+    const fn layout_ptr(&self) -> NonNull<Layout> {
+        // SAFETY: buffer holds the layout array at this point
+        unsafe { self.buffer.add(Self::columns_size()).cast::<Layout>() }
+    }
+    /// # Safety
+    /// This will give mutable access to the columns header wihout checks.
+    #[expect(clippy::mut_from_ref, reason = "needed to access in parallel with columns")]
+    const unsafe fn layout(&self) -> &mut [Layout] {
+        // SAFETY: layout_ptr is a valid layout array
+        unsafe { slice::from_raw_parts_mut(self.layout_ptr().as_mut(), C::COUNT) }
+    }
+    const fn layout_size() -> usize {
+        C::COUNT * size_of::<Layout>()
+    }
+    const fn occupation_ptr(&self) -> NonNull<u8> {
+        // SAFETY: buffer holds the occupation table at this point
+        unsafe { self.buffer.add(Self::columns_size() + Self::layout_size()) }
     }
     const fn occupation_size(capacity: Length) -> usize {
         capacity.div_ceil(8) as usize
     }
     const fn header_size(capacity: Length) -> usize {
-        Self::columns_size() + Self::occupation_size(capacity)
+        Self::columns_size() + Self::layout_size() + Self::occupation_size(capacity)
     }
 
-    const fn is_occupied(occupation: NonNull<u8>, index: Index) -> bool {
+    const fn is_occupied(&self, index: Index) -> bool {
         // SAFETY: if index is in capacity, then chunk is a valid part of the header
-        let chunk = unsafe { occupation.add(index.get() as usize / 8).read() };
+        let chunk = unsafe { self.occupation_ptr().add(index.get() as usize / 8).read() };
         chunk >> (index.get() % 8) & 1 == 1
     }
-    const fn set_occupied(occupation: NonNull<u8>, index: Index) {
+    const fn set_occupied(&mut self, index: Index) {
         // SAFETY: if index is in capacity, then chunk is a valid part of the header
-        let chunk = unsafe { occupation.add(index.get() as usize / 8).as_mut() };
+        let chunk = unsafe { self.occupation_ptr().add(index.get() as usize / 8).as_mut() };
         *chunk |= 1 << (index.get() % 8);
     }
-    const fn clear_occupied(occupation: NonNull<u8>, index: Index) {
+    const fn clear_occupied(&mut self, index: Index) {
         // SAFETY: if index is in capacity, then chunk is a valid part of the header
-        let chunk = unsafe { occupation.add(index.get() as usize / 8).as_mut() };
+        let chunk = unsafe { self.occupation_ptr().add(index.get() as usize / 8).as_mut() };
         *chunk &= !(1 << (index.get() % 8));
     }
 
-    fn register_columns(capacity: Length) -> Result<(Vec<ColumnsData>, Layout), LayoutError> {
+    fn register_columns(capacity: Length) -> Result<(Vec<Header>, Layout), LayoutError> {
         let mut columns = Vec::with_capacity(C::COUNT);
-        C::register_layout(capacity, &mut |typeid: TypeId, layout: Layout| {
-            columns.push(ColumnsData::new(typeid, layout));
+        C::register_layout(capacity, &mut |layout: Layout| {
+            columns.push(Header::new(layout));
         })?;
         debug_assert_eq!(columns.len(), C::COUNT);
         let mut offset = Self::header_size(capacity);
-        let mut align = align_of::<ColumnsData>();
+        let mut align = Self::header_align();
         for column in &mut columns {
             offset = offset.next_multiple_of(column.layout.align());
             column.offset = offset;
@@ -92,42 +125,51 @@ where
         let Ok(layout) = Layout::from_size_align(offset, align) else { panic!("invalid layout") };
         Ok((columns, layout))
     }
-    fn update_columns(
-        mut columns: NonNull<ColumnsData>,
-        old_capacity: Length,
-        new_capacity: Length,
-    ) -> Result<(Layout, Layout), LayoutError> {
+    fn update_columns(&mut self, new_capacity: Length) -> Result<(Layout, Layout), LayoutError> {
         let mut offset = Self::header_size(new_capacity);
-        let mut old_size = Self::header_size(old_capacity);
-        let mut align = align_of::<ColumnsData>();
-        C::register_layout(new_capacity, &mut |typeid: TypeId, layout: Layout| {
-            let column = unsafe { columns.as_mut() };
-            assert_eq!(column.typeid, typeid);
-            old_size = old_size.next_multiple_of(column.layout.align()) + column.layout.size();
-            column.layout = layout;
-            column.offset = offset.next_multiple_of(layout.align());
-            offset += layout.size();
-            if layout.align() > align {
-                align = layout.align();
+        let mut old_size = Self::header_size(self.cap);
+        let mut align = Self::header_align();
+        // SAFETY: self can be mutable here
+        let mut columns = unsafe { self.columns().iter_mut() };
+        // SAFETY: self can be mutable here
+        let mut layouts = unsafe { self.layout().iter_mut() };
+        C::register_layout(new_capacity, &mut |new_layout: Layout| {
+            // SAFETY: number of columns can't change
+            let column = unsafe { columns.next().unwrap_unchecked() };
+            // SAFETY: number of columns can't change
+            let layout = unsafe { layouts.next().unwrap_unchecked() };
+            old_size = old_size.next_multiple_of(layout.align()) + layout.size();
+            *layout = new_layout;
+            // SAFETY: this is only a temporary value
+            *column = unsafe {
+                NonNull::new_unchecked(offset.next_multiple_of(layout.align()) as *mut u8)
+            };
+            offset += new_layout.size();
+            if new_layout.align() > align {
+                align = new_layout.align();
             }
         })?;
         Ok((Layout::from_size_align(old_size, align)?, Layout::from_size_align(offset, align)?))
     }
     fn allocate_initialized(capacity: Length) -> SResult<NonNull<u8>> {
-        let (mut columns, layout) = Self::register_columns(capacity)
+        let (headers, layout) = Self::register_columns(capacity)
             .map_err(|_| StoreError::InvalidLayout("invalid column layout"))?;
         // SAFETY: size is not zero
         let buffer = unsafe { alloc(layout) };
         let Some(buffer) = NonNull::new(buffer) else { handle_alloc_error(layout) };
-        // SAFETY: buffer is big enough to hold columns
-        unsafe {
-            buffer.copy_from_nonoverlapping(
-                NonNull::new_unchecked(columns.as_mut_ptr() as *mut u8),
-                C::COUNT,
-            )
-        };
+        for (i, header) in headers.into_iter().enumerate() {
+            // SAFETY: buffer is big enough to hold header
+            unsafe {
+                buffer.cast::<NonNull<u8>>().add(i).write(buffer.add(header.offset));
+                buffer.add(Self::columns_size()).cast::<Layout>().add(i).write(header.layout);
+            }
+        }
         // SAFETY: buffer is big enough to hold occupation table
-        unsafe { buffer.add(Self::columns_size()).write_bytes(0, capacity.div_ceil(8) as usize) };
+        unsafe {
+            buffer
+                .add(Self::columns_size() + Self::layout_size())
+                .write_bytes(0, capacity.div_ceil(8) as usize)
+        };
         Ok(buffer)
     }
 
@@ -152,9 +194,9 @@ where
         if new_capacity <= self.cap {
             return Err(StoreError::Narrow(new_capacity, self.cap));
         }
-        let (old_layout, new_layout) =
-            Self::update_columns(self.buffer.cast::<ColumnsData>(), self.cap, new_capacity)
-                .map_err(|_| StoreError::InvalidLayout("invalid layout"))?;
+        let (old_layout, new_layout) = self
+            .update_columns(new_capacity)
+            .map_err(|_| StoreError::InvalidLayout("invalid layout"))?;
         // SAFETY: layout is valid here
         let buffer = unsafe { alloc(new_layout) };
         let Some(buffer) = NonNull::new(buffer) else {
@@ -167,19 +209,19 @@ where
         unsafe { buffer.copy_from_nonoverlapping(self.buffer, old_header_size) };
         // SAFETY: buffer is big enough to hold the header
         unsafe { buffer.add(old_header_size).write_bytes(0, new_header_size - old_header_size) };
-        let mut new_columns = buffer.cast::<ColumnsData>();
+        let mut new_columns = buffer.cast::<NonNull<u8>>();
         let mut old_offset = old_header_size;
         // NOTE: the old layout has to be re-calculated because the header was overritten in update_columns
-        C::register_layout(self.cap, &mut |_, old_layout: Layout| {
+        C::register_layout(self.cap, &mut |old_layout: Layout| {
             old_offset = old_offset.next_multiple_of(old_layout.align());
-            // SAFETY: new_columns is a valid ColumnsData array (initialized in update_columns)
-            let new_column = unsafe { new_columns.as_ref() };
+            // SAFETY: new_columns holds the offset from the base pointer of the new columns (set in update_columns)
+            let new_column = unsafe { buffer.add(new_columns.read().as_ptr() as usize) };
+            unsafe { new_columns.write(new_column) };
             // SAFETY: new column is at least as large as the the old column
             unsafe {
-                buffer
-                    .add(new_column.offset)
-                    .copy_from_nonoverlapping(self.buffer.add(old_offset), old_layout.size())
+                new_column.copy_from_nonoverlapping(self.buffer.add(old_offset), old_layout.size())
             };
+            // SAFETY: number of columns can't change
             new_columns = unsafe { new_columns.add(1) };
             old_offset += old_layout.size();
         })
@@ -205,11 +247,8 @@ where
 {
     fn insert_within_capacity(&mut self, element: C) -> Result<Index, C> {
         let index = if let Some(head) = self.head {
-            self.head = *C::as_freelist_entry(head, &mut |col| {
-                let column = unsafe { self.buffer.cast::<ColumnsData>().add(col).as_ref() };
-                // SAFETY: ColumnsData contains valid column pointers at this point
-                unsafe { self.buffer.add(column.offset) }
-            });
+            // SAFETY: self can be mutable here
+            self.head = *C::as_freelist_entry(head, unsafe { self.columns() });
             head
         } else if self.next_free.get() < self.cap {
             let next_free = self.next_free;
@@ -219,19 +258,10 @@ where
         } else {
             return Err(element);
         };
-        // SAFETY: buffer holds a valid occupation table at this point
-        let occupation = unsafe { self.buffer.add(Self::columns_size()) };
-        debug_assert!(!Self::is_occupied(occupation, index));
-        let mut columns = self.buffer.cast::<ColumnsData>();
-        element.move_into(index, &mut || {
-            // SAFETY: columns is a valid ColumnsData pointer
-            let offset = unsafe { columns.as_ref().offset };
-            // SAFETY: move_into guaranties to never access more columns than availible
-            columns = unsafe { columns.add(1) };
-            // SAFETY: column is a valid pointer to a column
-            unsafe { self.buffer.add(offset) }
-        });
-        Self::set_occupied(occupation, index);
+        debug_assert!(!self.is_occupied(index));
+        // SAFETY: self can be mutable here
+        element.move_into(index, unsafe { self.columns() });
+        self.set_occupied(index);
         Ok(index)
     }
 }
@@ -246,20 +276,12 @@ where
         if index >= self.next_free {
             return Err(StoreError::OutOfBounds(index, self.next_free.get()));
         }
-        let occupation = unsafe { self.buffer.add(Self::columns_size()) };
-        if !Self::is_occupied(occupation, index) {
+        if !self.is_occupied(index) {
             return Err(StoreError::DoubleFree(index));
         }
-        let mut columns = self.buffer.cast::<ColumnsData>();
-        let element = C::take(index, &mut || {
-            // SAFETY: columns is a valid ColumnsData pointer
-            let offset = unsafe { columns.as_ref().offset };
-            // SAFETY: move_into guaranties to never access more columns than availible
-            columns = unsafe { columns.add(1) };
-            // SAFETY: column is a valid pointer to a column
-            unsafe { self.buffer.add(offset) }
-        });
-        Self::clear_occupied(occupation, index);
+        // SAFETY: self can be mutable here
+        let element = C::take(index, unsafe { self.columns() });
+        self.clear_occupied(index);
         Ok(element)
     }
 }
