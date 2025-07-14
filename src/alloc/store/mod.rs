@@ -113,6 +113,10 @@ pub trait GetDisjointMut<E: Element> {
         indices: [E::Index; N],
     ) -> [E::Mut<'_>; N];
 }
+pub trait View<E: Element> {
+    fn view(&self) -> E::Ref<'_>;
+    fn view_mut(&mut self) -> E::Mut<'_>;
+}
 pub trait Insert<E: Element> {
     fn insert_within_capacity(&mut self, element: E::Val) -> Result<E::Index, E::Val>;
 }
@@ -150,7 +154,7 @@ pub trait Store<T>: Get<Single<T>> + Insert<Single<T>> + Resizable {}
 pub trait ReusableStore<T>: Store<T> + Remove<Single<T>> {}
 pub trait MultiStore<T>: Get<Multi<T>> + InsertIndirect<Multi<T>> + Resizable {}
 pub trait ReusableMultiStore<T>: MultiStore<T> + RemoveIndirect<Multi<T>> {}
-pub trait SoAStore<C: Columns>: Insert<Single<C>> + Resizable {}
+pub trait SoAStore<C: Columns>: View<Rows<C>> + Insert<Single<C>> + Resizable {}
 pub trait ReusableSoAStore<C: Columns>: SoAStore<C> + Remove<Single<C>> {}
 
 #[derive(Debug)]
