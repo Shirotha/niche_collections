@@ -83,6 +83,20 @@ impl<T> Element for Multi<T> {
     where
         Self: 'a;
 }
+pub struct Rows<C>(PhantomData<C>);
+impl<C: Columns> Element for Rows<C> {
+    type Index = ();
+
+    type Val = C;
+    type Ref<'a>
+        = C::Ref<'a>
+    where
+        Self: 'a;
+    type Mut<'a>
+        = C::Mut<'a>
+    where
+        Self: 'a;
+}
 pub trait Get<E: Element> {
     fn get(&self, index: E::Index) -> SResult<E::Ref<'_>>;
     fn get_mut(&mut self, index: E::Index) -> SResult<E::Mut<'_>>;
@@ -164,14 +178,12 @@ impl<T> Drop for InsertIndirectGuard<'_, T> {
 pub unsafe trait Columns: Sized {
     const COUNT: usize;
 
-    type Ref<'a, F>
+    type Ref<'a>
     where
-        Self: 'a,
-        F: 'a;
-    type Mut<'a, F>
+        Self: 'a;
+    type Mut<'a>
     where
-        Self: 'a,
-        F: 'a;
+        Self: 'a;
 
     /// Registers each column with the store.
     /// `register` will be called exactly `COUNT` times.
@@ -188,12 +200,12 @@ pub unsafe trait Columns: Sized {
     fn as_freelist_entry(index: Index, columns: &[NonNull<u8>]) -> &mut Option<Index>;
     /// Create Ref object to act as an accessor.
     /// This will be called inside of Deref, so this should be cheap.
-    fn make_ref<'a, F>(columns: &'a [NonNull<u8>], validate: &'a F) -> Self::Ref<'a, F>
+    fn make_ref<'a>(columns: &'a [NonNull<u8>], occupation_ptr: NonNull<u8>) -> Self::Ref<'a>
     where
         Self: 'a;
     /// Create Mut object to act as a mutable accessor.
     /// This will be called inside of DerefMut, so this should be cheap.
-    fn make_mut<'a, F>(columns: &'a [NonNull<u8>], validate: &'a F) -> Self::Mut<'a, F>
+    fn make_mut<'a>(columns: &'a [NonNull<u8>], occupation_ptr: NonNull<u8>) -> Self::Mut<'a>
     where
         Self: 'a;
 }
@@ -201,76 +213,86 @@ pub union FreelistEntry<T> {
     _data: ManuallyDrop<T>,
     _next: Option<Index>,
 }
-pub struct TupleRef<'a, T, F>(&'a [NonNull<u8>], &'a F, PhantomData<&'a T>);
-pub struct TupleMut<'a, T, F>(&'a [NonNull<u8>], &'a F, PhantomData<&'a T>);
+/// # Safety
+/// `occupation_ptr` is not checked,
+/// only a pointer passed to `Columns::make_ref` or `Columns::make_mut` should be used.
+pub const unsafe fn validate_row_index(occupation_ptr: NonNull<u8>, index: Index) -> SResult<()> {
+    // SAFETY: if index is in capacity, then chunk is a valid part of the header
+    let chunk = unsafe { occupation_ptr.add(index.get() as usize / 8).read() };
+    if chunk >> (index.get() % 8) & 1 == 0 {
+        Err(StoreError::AccessAfterFree(index))
+    } else {
+        Ok(())
+    }
+}
+pub struct TupleRef<'a, T>(&'a [NonNull<u8>], NonNull<u8>, PhantomData<&'a T>);
+pub struct TupleMut<'a, T>(&'a [NonNull<u8>], NonNull<u8>, PhantomData<&'a T>);
 macro_rules! impl_columns {
-    ((0, $T0:ident, $t0:ident) $(, ($i:tt, $T:ident, $t:ident))*) => {
-        paste! {
-            impl<$T0, $($T,)* F> TupleRef<'_, ($T0, $($T,)*), F>
-            where
-                F: Fn(Index) -> SResult<()>
-            {
-                pub fn col0(&self, index: Index) -> SResult<&$T0> {
-                    self.1(index)?;
-                    Ok(unsafe {
-                        self.0[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
-                            .cast::<$T0>().as_ref()
-                    })
-                }
-                $(
-                    pub fn [<col $i>](&self, index: Index) -> SResult<&$T> {
-                        self.1(index)?;
-                        Ok(unsafe {
-                            self.0[$i].cast::<$T>().add(index.get() as usize).as_ref()
-                        })
-                    }
-                )*
+    ((0, $T0:ident, $t0:ident) $(, ($i:tt, $T:ident, $t:ident))*) => { paste! {
+        impl<$T0, $($T),*> TupleRef<'_, ($T0, $($T,)*)>
+        {
+            pub fn col0(&self, index: Index) -> SResult<&$T0> {
+                // SAFETY: self.1 is a valid pointer ot an occupation table
+                unsafe { validate_row_index(self.1, index)? };
+                Ok(unsafe {
+                    self.0[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
+                        .cast::<$T0>().as_ref()
+                })
             }
-            impl<$T0, $($T,)* F> TupleMut<'_, ($T0, $($T,)*), F>
-            where
-                F: Fn(Index) -> SResult<()>
-            {
-                pub fn col0(&self, index: Index) -> SResult<&$T0> {
-                    self.1(index)?;
+            $(
+                pub fn [<col $i>](&self, index: Index) -> SResult<&$T> {
+                    // SAFETY: self.1 is a valid pointer ot an occupation table
+                    unsafe { validate_row_index(self.1, index)? };
                     Ok(unsafe {
-                        self.0[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
-                            .cast::<$T0>().as_ref()
+                        self.0[$i].cast::<$T>().add(index.get() as usize).as_ref()
                     })
                 }
-                pub fn col0_mut(&mut self, index: Index) -> SResult<&mut $T0> {
-                    self.1(index)?;
-                    Ok(unsafe {
-                        self.0[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
-                            .cast::<$T0>().as_mut()
-                    })
-                }
-                $(
-                    pub fn [<col $i>](&self, index: Index) -> SResult<&$T> {
-                        self.1(index)?;
-                        Ok(unsafe {
-                            self.0[$i].cast::<$T>().add(index.get() as usize).as_ref()
-                        })
-                    }
-                    pub fn [<col $i _mut>](&mut self, index: Index) -> SResult<&mut $T> {
-                        self.1(index)?;
-                        Ok(unsafe {
-                            self.0[$i].cast::<$T>().add(index.get() as usize).as_mut()
-                        })
-                    }
-                )*
+            )*
+        }
+        impl<$T0, $($T,)*> TupleMut<'_, ($T0, $($T,)*)>
+        {
+            pub fn col0(&self, index: Index) -> SResult<&$T0> {
+                // SAFETY: self.1 is a valid pointer ot an occupation table
+                unsafe { validate_row_index(self.1, index)? };
+                Ok(unsafe {
+                    self.0[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
+                        .cast::<$T0>().as_ref()
+                })
             }
+            pub fn col0_mut(&mut self, index: Index) -> SResult<&mut $T0> {
+                // SAFETY: self.1 is a valid pointer ot an occupation table
+                unsafe { validate_row_index(self.1, index)? };
+                Ok(unsafe {
+                    self.0[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
+                        .cast::<$T0>().as_mut()
+                })
+            }
+            $(
+                pub fn [<col $i>](&self, index: Index) -> SResult<&$T> {
+                    // SAFETY: self.1 is a valid pointer ot an occupation table
+                    unsafe { validate_row_index(self.1, index)? };
+                    Ok(unsafe {
+                        self.0[$i].cast::<$T>().add(index.get() as usize).as_ref()
+                    })
+                }
+                pub fn [<col $i _mut>](&mut self, index: Index) -> SResult<&mut $T> {
+                    // SAFETY: self.1 is a valid pointer ot an occupation table
+                    unsafe { validate_row_index(self.1, index)? };
+                    Ok(unsafe {
+                        self.0[$i].cast::<$T>().add(index.get() as usize).as_mut()
+                    })
+                }
+            )*
         }
         unsafe impl<$T0, $($T),*> Columns for ($T0, $($T,)*) {
             const COUNT: usize = 1 $(+{$i;1})*;
 
-            type Ref<'a, F> = TupleRef<'a, ($T0, $($T,)*), F>
+            type Ref<'a> = TupleRef<'a, ($T0, $($T,)*)>
             where
-                Self: 'a,
-                F: 'a;
-            type Mut<'a, F> = TupleMut<'a, ($T0, $($T,)*), F>
+                Self: 'a;
+            type Mut<'a> = TupleMut<'a, ($T0, $($T,)*)>
             where
-                Self: 'a,
-                F: 'a;
+                Self: 'a;
 
             fn register_layout(
                 rows: Length,
@@ -322,22 +344,20 @@ macro_rules! impl_columns {
                         .add(index.get() as usize).cast::<Option<Index>>().as_mut()
                 }
             }
-            fn make_ref<'a, F>(columns: &'a [NonNull<u8>], validate: &'a F) -> Self::Ref<'a, F>
+            fn make_ref<'a>(columns: &'a [NonNull<u8>], occupation_ptr: NonNull<u8>) -> Self::Ref<'a>
             where
                 Self: 'a,
-                F: 'a,
             {
-                TupleRef(columns, validate, PhantomData)
+                TupleRef(columns, occupation_ptr, PhantomData)
             }
-            fn make_mut<'a, F>(columns: &'a [NonNull<u8>], validate: &'a F) -> Self::Mut<'a, F>
+            fn make_mut<'a>(columns: &'a [NonNull<u8>], occupation_ptr: NonNull<u8>) -> Self::Mut<'a>
             where
                 Self: 'a,
-                F: 'a,
             {
-                TupleMut(columns, validate, PhantomData)
+                TupleMut(columns, occupation_ptr, PhantomData)
             }
         }
-    };
+    } };
 }
 all_tuples_enumerated!(impl_columns, 1, 16, T, t);
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -348,13 +368,11 @@ impl<T, C> Prefix<T, C> {
         Self(((prefix,), rest))
     }
 }
-pub struct JoinRef<'a, T, F>(&'a [NonNull<u8>], &'a F, PhantomData<&'a T>);
-pub struct JoinMut<'a, T, F>(&'a [NonNull<u8>], &'a F, PhantomData<&'a T>);
+pub struct JoinRef<'a, T>(&'a [NonNull<u8>], NonNull<u8>, PhantomData<&'a T>);
+pub struct JoinMut<'a, T>(&'a [NonNull<u8>], NonNull<u8>, PhantomData<&'a T>);
 macro_rules! impl_join {
     ((0, $T0:ident) $(,($i:tt, $T:ident))*) => { paste! {
-        impl<$T0: Columns, $($T: Columns,)* F> JoinRef<'_, ($T0, $($T,)*), F>
-        where
-            F: Fn(Index) -> SResult<()>
+        impl<$T0: Columns, $($T: Columns,)*> JoinRef<'_, ($T0, $($T,)*)>
         {
             const COUNTS: [usize; 1 $(+{$i;1})*] = [
                 $T0::COUNT,
@@ -368,18 +386,16 @@ macro_rules! impl_join {
                 }
                 result
             }
-            pub fn part0(&self) -> $T0::Ref<'_, F> {
-                $T0::make_ref(&self.0[0..$T0::COUNT], &self.1)
+            pub fn part0(&self) -> $T0::Ref<'_> {
+                $T0::make_ref(&self.0[0..$T0::COUNT], self.1)
             }
             $(
-                pub fn [<part $i>](&self) -> $T::Ref<'_, F> {
-                    $T::make_ref(&self.0[Self::offset($i)..Self::offset($i + 1)], &self.1)
+                pub fn [<part $i>](&self) -> $T::Ref<'_> {
+                    $T::make_ref(&self.0[Self::offset($i)..Self::offset($i + 1)], self.1)
                 }
             )*
         }
-        impl<$T0: Columns, $($T: Columns,)* F> JoinMut<'_, ($T0, $($T,)*), F>
-        where
-            F: Fn(Index) -> SResult<()>
+        impl<$T0: Columns, $($T: Columns,)*> JoinMut<'_, ($T0, $($T,)*)>
         {
             const COUNTS: [usize; 1 $(+{$i;1})*] = [
                 $T0::COUNT,
@@ -393,18 +409,18 @@ macro_rules! impl_join {
                 }
                 result
             }
-            pub fn part0(&self) -> $T0::Ref<'_, F> {
-                $T0::make_ref(&self.0[0..$T0::COUNT], &self.1)
+            pub fn part0(&self) -> $T0::Ref<'_> {
+                $T0::make_ref(&self.0[0..$T0::COUNT], self.1)
             }
-            pub fn part0_mut(&mut self) -> $T0::Mut<'_, F> {
-                $T0::make_mut(&self.0[0..$T0::COUNT], &self.1)
+            pub fn part0_mut(&mut self) -> $T0::Mut<'_> {
+                $T0::make_mut(&self.0[0..$T0::COUNT], self.1)
             }
             $(
-                pub fn [<part $i>](&self) -> $T::Ref<'_, F> {
-                    $T::make_ref(&self.0[Self::offset($i)..Self::offset($i + 1)], &self.1)
+                pub fn [<part $i>](&self) -> $T::Ref<'_> {
+                    $T::make_ref(&self.0[Self::offset($i)..Self::offset($i + 1)], self.1)
                 }
-                pub fn [<part $i _mut>](&mut self) -> $T::Mut<'_, F> {
-                    $T::make_mut(&self.0[Self::offset($i)..Self::offset($i + 1)], &self.1)
+                pub fn [<part $i _mut>](&mut self) -> $T::Mut<'_> {
+                    $T::make_mut(&self.0[Self::offset($i)..Self::offset($i + 1)], self.1)
                 }
             )*
         }
@@ -413,14 +429,12 @@ macro_rules! impl_join {
             #![allow(unused_assignments)]
             const COUNT: usize = $T0::COUNT $(+ $T::COUNT)*;
 
-            type Ref<'a, F> = JoinRef<'a, ($T0, $($T,)*), F>
+            type Ref<'a> = JoinRef<'a, ($T0, $($T,)*)>
             where
-                Self: 'a,
-                F: 'a;
-            type Mut<'a, F> = JoinMut<'a, ($T0, $($T,)*), F>
+                Self: 'a;
+            type Mut<'a> = JoinMut<'a, ($T0, $($T,)*)>
             where
-                Self: 'a,
-                F: 'a;
+                Self: 'a;
 
             fn register_layout(
                 count: Length,
@@ -456,19 +470,17 @@ macro_rules! impl_join {
             ) -> &mut Option<Index> {
                 $T0::as_freelist_entry(index, &columns[0..$T0::COUNT])
             }
-            fn make_ref<'a, F>(columns: &'a [NonNull<u8>], validate: &'a F) -> Self::Ref<'a, F>
+            fn make_ref<'a>(columns: &'a [NonNull<u8>], occupation_ptr: NonNull<u8>) -> Self::Ref<'a>
             where
                 Self: 'a,
-                F: 'a
             {
-                JoinRef(columns, validate, PhantomData)
+                JoinRef(columns, occupation_ptr, PhantomData)
             }
-            fn make_mut<'a, F>(columns: &'a [NonNull<u8>], validate: &'a F) -> Self::Mut<'a, F>
+            fn make_mut<'a>(columns: &'a [NonNull<u8>], occupation_ptr: NonNull<u8>) -> Self::Mut<'a>
             where
                 Self: 'a,
-                F: 'a
             {
-                JoinMut(columns, validate, PhantomData)
+                JoinMut(columns, occupation_ptr, PhantomData)
             }
         }
     }};
