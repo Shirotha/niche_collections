@@ -138,8 +138,8 @@ where
 impl<'id, C, const REUSE: bool, V> Arena<'id, 'id, SoA<C>, Exclusive<REUSE, V>>
 where
     C: Columns,
-    GlobalConfig<SoA<C>, Exclusive<REUSE, V>>: for<'x> Config<
-            Store: SoAStore<C>,
+    GlobalConfig<SoA<C>, Exclusive<REUSE, V>>: for<'x, 'a> Config<
+            Store: SoAStore<C, &'a XHandle<'x, C>>,
             Manager<'x> = XManager<'x, SoA<C>, Exclusive<REUSE, V>>,
             Arena<'x, 'x> = XArena<'x, SoA<C>, Exclusive<REUSE, V>>,
         >,
@@ -166,8 +166,8 @@ where
 impl<'id, C, V> Arena<'id, 'id, SoA<C>, Exclusive<true, V>>
 where
     C: Columns,
-    GlobalConfig<SoA<C>, Exclusive<true, V>>: for<'x> Config<
-            Store: ReusableSoAStore<C>,
+    GlobalConfig<SoA<C>, Exclusive<true, V>>: for<'a, 'x> Config<
+            Store: ReusableSoAStore<C, &'a XHandle<'x, C>>,
             Manager<'x> = XManager<'x, SoA<C>, Exclusive<true, V>>,
             Arena<'x, 'x> = XArena<'x, SoA<C>, Exclusive<true, V>>,
         >,

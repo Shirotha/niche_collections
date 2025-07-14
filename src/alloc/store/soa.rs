@@ -265,21 +265,27 @@ where
         Ok(index)
     }
 }
-impl<C> View<Rows<C>> for SoAFreelistStore<C>
+impl<C, I> View<Rows<C, I>> for SoAFreelistStore<C>
 where
+    I: IntoIndex,
     C: Columns,
 {
-    fn view(&self) -> <Rows<C> as Element>::Ref<'_> {
+    fn view(&self) -> <Rows<C, I> as Element>::Ref<'_> {
         // SAFETY: columns is restricted to read-only access here
         C::make_ref(unsafe { self.columns() }, self.occupation_ptr())
     }
 
-    fn view_mut(&mut self) -> <Rows<C> as Element>::Mut<'_> {
+    fn view_mut(&mut self) -> <Rows<C, I> as Element>::Mut<'_> {
         // SAFETY: mutable access is valid here
         C::make_mut(unsafe { self.columns() }, self.occupation_ptr())
     }
 }
-impl<C> SoAStore<C> for SoAFreelistStore<C> where C: Columns {}
+impl<C, I> SoAStore<C, I> for SoAFreelistStore<C>
+where
+    C: Columns,
+    I: IntoIndex,
+{
+}
 
 impl<C> Remove<Single<C>> for SoAFreelistStore<C>
 where
@@ -298,4 +304,9 @@ where
         Ok(element)
     }
 }
-impl<C> ReusableSoAStore<C> for SoAFreelistStore<C> where C: Columns {}
+impl<C, I> ReusableSoAStore<C, I> for SoAFreelistStore<C>
+where
+    C: Columns,
+    I: IntoIndex,
+{
+}

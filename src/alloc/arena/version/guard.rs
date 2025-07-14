@@ -70,7 +70,7 @@ macro_rules! impl_read {
             C: Columns,
             H: Header,
             GlobalConfig<SoA<C>, Versioned<REUSE, H, V>>: for<'x> Config<
-                    Store: SoAStore<Prefix<Version, C>>,
+                    Store: SoAStore<Prefix<Version, C>, VHandle<'x, C>>,
                     Manager<'x> = VManager<'x, SoA<C>, Versioned<REUSE, H, V>>,
                 >,
         {
@@ -162,7 +162,7 @@ macro_rules! impl_write {
             C: Columns,
             H: Header,
             GlobalConfig<SoA<C>, Versioned<REUSE, H, V>>: for<'x> Config<
-                    Store: SoAStore<Prefix<Version, C>>,
+                    Store: SoAStore<Prefix<Version, C>, VHandle<'x, C>>,
                     Manager<'x> = VManager<'x, SoA<C>, Versioned<REUSE, H, V>>,
                 >,
         {
@@ -331,7 +331,7 @@ where
     C: Columns,
     H: Header,
     GlobalConfig<SoA<C>, Versioned<REUSE, H, V>>: for<'x> Config<
-            Store: SoAStore<Prefix<Version, C>>,
+            Store: SoAStore<Prefix<Version, C>, VHandle<'x, C>>,
             Manager<'x> = VManager<'x, SoA<C>, Versioned<REUSE, H, V>>,
         >,
 {
@@ -359,7 +359,7 @@ where
     C: Columns,
     H: Header,
     GlobalConfig<SoA<C>, Versioned<true, H, V>>: for<'x> Config<
-            Store: ReusableSoAStore<Prefix<Version, C>>,
+            Store: ReusableSoAStore<Prefix<Version, C>, VHandle<'x, C>>,
             Manager<'x> = VManager<'x, SoA<C>, Versioned<true, H, V>>,
         >,
 {

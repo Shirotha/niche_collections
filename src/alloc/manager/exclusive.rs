@@ -110,8 +110,10 @@ where
 impl<'id, C, const REUSE: bool, V> Manager<'id, SoA<C>, Exclusive<REUSE, V>>
 where
     C: Columns,
-    GlobalConfig<SoA<C>, Exclusive<REUSE, V>>:
-        for<'x> Config<Store: SoAStore<C>, Manager<'x> = XManager<'x, SoA<C>, Exclusive<REUSE, V>>>,
+    GlobalConfig<SoA<C>, Exclusive<REUSE, V>>: for<'a, 'x> Config<
+            Store: SoAStore<C, &'a XHandle<'x, C>>,
+            Manager<'x> = XManager<'x, SoA<C>, Exclusive<REUSE, V>>,
+        >,
 {
     pub fn insert_within_capacity(&mut self, data: C) -> Result<XHandle<'id, C>, C> {
         self.0.store.insert_within_capacity(data).map(|index| XHandle {
@@ -124,8 +126,8 @@ where
 impl<'id, C, V> Manager<'id, SoA<C>, Exclusive<true, V>>
 where
     C: Columns,
-    GlobalConfig<SoA<C>, Exclusive<true, V>>: for<'x> Config<
-            Store: ReusableSoAStore<C>,
+    GlobalConfig<SoA<C>, Exclusive<true, V>>: for<'a, 'x> Config<
+            Store: ReusableSoAStore<C, &'a XHandle<'x, C>>,
             Manager<'x> = XManager<'x, SoA<C>, Exclusive<true, V>>,
         >,
 {

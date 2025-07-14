@@ -20,6 +20,11 @@ impl<T: ?Sized> Clone for VHandle<'_, T> {
     }
 }
 impl<T: ?Sized> Copy for VHandle<'_, T> {}
+impl<T: ?Sized> IntoIndex for VHandle<'_, T> {
+    fn into_index(self) -> Index {
+        self.index
+    }
+}
 
 pub struct VManager<'id, K, C>
 where
@@ -140,10 +145,16 @@ impl<'id, C, const REUSE: bool, H, V> Manager<'id, SoA<C>, Versioned<REUSE, H, V
 where
     C: Columns,
     GlobalConfig<SoA<C>, Versioned<REUSE, H, V>>: for<'x> Config<
-            Store: SoAStore<Prefix<Version, C>>,
+            Store: SoAStore<Prefix<Version, C>, VHandle<'id, C>>,
             Manager<'x> = VManager<'x, SoA<C>, Versioned<REUSE, H, V>>,
         >,
 {
+    pub fn view(&self) -> C::Ref<'_, VHandle<'id, C>> {
+        self.0.store.view().into_part1()
+    }
+    pub fn view_mut(&mut self) -> C::Mut<'_, VHandle<'id, C>> {
+        self.0.store.view_mut().into_part1_mut()
+    }
     pub fn insert_within_capacity(&mut self, data: C) -> Result<VHandle<'id, C>, C> {
         if self.0.dirty {
             self.0.dirty = false;
@@ -161,19 +172,29 @@ where
             })
     }
     pub(crate) fn bump_version(&mut self, mut handle: VHandle<'id, C>) -> MResult<VHandle<'id, C>> {
-        todo!()
+        let v = self.0.store.view_mut().into_part0_mut().into_col0_mut(handle)?;
+        if *v != handle.version {
+            return Err(ManagerError::BadHandle("version mismatch"));
+        }
+        handle.version = handle.version.checked_add(1).unwrap_or(VERSION1);
+        *v = handle.version;
+        Ok(handle)
     }
 }
 impl<'id, C, H, V> Manager<'id, SoA<C>, Versioned<true, H, V>>
 where
     C: Columns,
     GlobalConfig<SoA<C>, Versioned<true, H, V>>: for<'x> Config<
-            Store: ReusableSoAStore<Prefix<Version, C>>,
+            Store: ReusableSoAStore<Prefix<Version, C>, VHandle<'id, C>>,
             Manager<'x> = VManager<'x, SoA<C>, Versioned<true, H, V>>,
         >,
 {
     pub fn remove(&mut self, handle: VHandle<'id, C>) -> MResult<C> {
-        todo!()
+        let v = self.0.store.view_mut().into_part0_mut().into_col0_mut(handle)?;
+        if *v != handle.version {
+            return Err(ManagerError::BadHandle("version mismatch"));
+        }
+        Ok(self.0.store.remove(handle.index)?.into_rest())
     }
 }
 impl<'id, U, const REUSE: bool, H, V> Manager<'id, Slices<U>, Versioned<REUSE, H, V>>
