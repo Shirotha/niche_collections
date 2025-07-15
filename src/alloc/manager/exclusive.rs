@@ -11,6 +11,21 @@ pub struct XHandle<'id, T: ?Sized> {
     _manager: Id<'id>,
     _marker:  PhantomData<fn() -> T>,
 }
+impl<'id, T: ?Sized> IntoIndex for XHandle<'id, T> {
+    fn into_index(self) -> Index {
+        self.index
+    }
+}
+impl<'id, T: ?Sized> IntoIndex for &XHandle<'id, T> {
+    fn into_index(self) -> Index {
+        self.index
+    }
+}
+impl<'id, T: ?Sized> IntoIndex for &mut XHandle<'id, T> {
+    fn into_index(self) -> Index {
+        self.index
+    }
+}
 
 // TODO: how to handle Debug?
 // #[derive(Debug)]
@@ -111,10 +126,16 @@ impl<'id, C, const REUSE: bool, V> Manager<'id, SoA<C>, Exclusive<REUSE, V>>
 where
     C: Columns,
     GlobalConfig<SoA<C>, Exclusive<REUSE, V>>: for<'a, 'x> Config<
-            Store: SoAStore<C, &'a XHandle<'x, C>>,
+            Store: SoAStore<C, &'a XHandle<'x, C>, &'a mut XHandle<'x, C>>,
             Manager<'x> = XManager<'x, SoA<C>, Exclusive<REUSE, V>>,
         >,
 {
+    pub fn view(&self) -> C::Ref<'_, &'_ XHandle<'id, C>> {
+        self.0.store.view()
+    }
+    pub fn view_mut(&mut self) -> C::Mut<'_, &'_ mut XHandle<'id, C>> {
+        self.0.store.view_mut()
+    }
     pub fn insert_within_capacity(&mut self, data: C) -> Result<XHandle<'id, C>, C> {
         self.0.store.insert_within_capacity(data).map(|index| XHandle {
             index,
@@ -127,7 +148,7 @@ impl<'id, C, V> Manager<'id, SoA<C>, Exclusive<true, V>>
 where
     C: Columns,
     GlobalConfig<SoA<C>, Exclusive<true, V>>: for<'a, 'x> Config<
-            Store: ReusableSoAStore<C, &'a XHandle<'x, C>>,
+            Store: ReusableSoAStore<C, &'a XHandle<'x, C>, &'a mut XHandle<'x, C>>,
             Manager<'x> = XManager<'x, SoA<C>, Exclusive<true, V>>,
         >,
 {

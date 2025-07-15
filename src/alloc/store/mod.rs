@@ -83,21 +83,22 @@ impl<T> Element for Multi<T> {
     where
         Self: 'a;
 }
-pub struct Rows<C, I>(PhantomData<fn(I) -> C>);
-impl<C, I> Element for Rows<C, I>
+pub struct Rows<C, IRef, IMut = IRef>(PhantomData<fn((IRef, IMut)) -> C>);
+impl<C, IRef, IMut> Element for Rows<C, IRef, IMut>
 where
     C: Columns,
-    I: IntoIndex,
+    IRef: IntoIndex,
+    IMut: IntoIndex,
 {
-    type Index = I;
+    type Index = ();
 
     type Val = C;
     type Ref<'a>
-        = C::Ref<'a, I>
+        = C::Ref<'a, IRef>
     where
         Self: 'a;
     type Mut<'a>
-        = C::Mut<'a, I>
+        = C::Mut<'a, IMut>
     where
         Self: 'a;
 }
@@ -158,11 +159,14 @@ pub trait Store<T>: Get<Single<T>> + Insert<Single<T>> + Resizable {}
 pub trait ReusableStore<T>: Store<T> + Remove<Single<T>> {}
 pub trait MultiStore<T>: Get<Multi<T>> + InsertIndirect<Multi<T>> + Resizable {}
 pub trait ReusableMultiStore<T>: MultiStore<T> + RemoveIndirect<Multi<T>> {}
-pub trait SoAStore<C: Columns, I: IntoIndex>:
-    View<Rows<C, I>> + Insert<Single<C>> + Resizable
+pub trait SoAStore<C: Columns, IRef: IntoIndex, IMut: IntoIndex = IRef>:
+    View<Rows<C, IRef, IMut>> + Insert<Single<C>> + Resizable
 {
 }
-pub trait ReusableSoAStore<C: Columns, I: IntoIndex>: SoAStore<C, I> + Remove<Single<C>> {}
+pub trait ReusableSoAStore<C: Columns, IRef: IntoIndex, IMut: IntoIndex = IRef>:
+    SoAStore<C, IRef, IMut> + Remove<Single<C>>
+{
+}
 
 #[derive(Debug)]
 pub struct InsertIndirectGuard<'a, T> {
