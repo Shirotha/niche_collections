@@ -11,21 +11,19 @@ pub struct XHandle<'id, T: ?Sized> {
     _manager: Id<'id>,
     _marker:  PhantomData<fn() -> T>,
 }
-
-// TODO: how to handle Debug?
-// #[derive(Debug)]
-pub struct XQuery<'id, 'a, C, Q: Query> {
-    result:   QueryResult<'a, Q>,
-    _manager: Id<'id>,
-    _marker:  PhantomData<fn() -> C>,
-}
-impl<'id, C, Q: Query> XQuery<'id, '_, C, Q> {
-    pub fn get(&self, handle: &XHandle<'id, C>) -> Q::Output<'_> {
-        assert!(Q::READONLY);
-        self.result.get(handle.index)
+impl<'id, T: ?Sized> IntoIndex for XHandle<'id, T> {
+    fn into_index(self) -> Index {
+        self.index
     }
-    pub fn get_mut(&self, handle: &mut XHandle<'id, C>) -> Q::Output<'_> {
-        self.result.get(handle.index)
+}
+impl<'id, T: ?Sized> IntoIndex for &XHandle<'id, T> {
+    fn into_index(self) -> Index {
+        self.index
+    }
+}
+impl<'id, T: ?Sized> IntoIndex for &mut XHandle<'id, T> {
+    fn into_index(self) -> Index {
+        self.index
     }
 }
 
@@ -127,12 +125,16 @@ where
 impl<'id, C, const REUSE: bool, V> Manager<'id, SoA<C>, Exclusive<REUSE, V>>
 where
     C: Columns,
-    GlobalConfig<SoA<C>, Exclusive<REUSE, V>>:
-        for<'x> Config<Store: SoAStore<C>, Manager<'x> = XManager<'x, SoA<C>, Exclusive<REUSE, V>>>,
+    GlobalConfig<SoA<C>, Exclusive<REUSE, V>>: for<'a, 'x> Config<
+            Store: SoAStore<C, &'a XHandle<'x, C>, &'a mut XHandle<'x, C>>,
+            Manager<'x> = XManager<'x, SoA<C>, Exclusive<REUSE, V>>,
+        >,
 {
-    pub fn query<Q: Query>(&self) -> MResult<XQuery<'id, '_, C, Q>> {
-        let result = self.0.store.get::<Q>()?;
-        Ok(XQuery { result, _manager: self.0.id, _marker: PhantomData })
+    pub fn view(&self) -> C::Ref<'_, &'_ XHandle<'id, C>> {
+        self.0.store.view()
+    }
+    pub fn view_mut(&mut self) -> C::Mut<'_, &'_ mut XHandle<'id, C>> {
+        self.0.store.view_mut()
     }
     pub fn insert_within_capacity(&mut self, data: C) -> Result<XHandle<'id, C>, C> {
         self.0.store.insert_within_capacity(data).map(|index| XHandle {
@@ -145,8 +147,8 @@ where
 impl<'id, C, V> Manager<'id, SoA<C>, Exclusive<true, V>>
 where
     C: Columns,
-    GlobalConfig<SoA<C>, Exclusive<true, V>>: for<'x> Config<
-            Store: ReusableSoAStore<C>,
+    GlobalConfig<SoA<C>, Exclusive<true, V>>: for<'a, 'x> Config<
+            Store: ReusableSoAStore<C, &'a XHandle<'x, C>, &'a mut XHandle<'x, C>>,
             Manager<'x> = XManager<'x, SoA<C>, Exclusive<true, V>>,
         >,
 {

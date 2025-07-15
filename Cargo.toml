@@ -26,6 +26,7 @@ hardware-lock-elision = ["parking_lot/hardware-lock-elision"]
 generativity = "1.1.0"
 nonmax = "0.5.5"
 parking_lot = "0.12.3"
+paste = "1.0.15"
 
 serde = { version = "1.0", features = ["derive"], optional = true }
 thiserror = "2.0.11"

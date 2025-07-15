@@ -138,14 +138,18 @@ where
 impl<'id, C, const REUSE: bool, V> Arena<'id, 'id, SoA<C>, Exclusive<REUSE, V>>
 where
     C: Columns,
-    GlobalConfig<SoA<C>, Exclusive<REUSE, V>>: for<'x> Config<
-            Store: SoAStore<C>,
+    GlobalConfig<SoA<C>, Exclusive<REUSE, V>>: for<'x, 'a> Config<
+            Store: SoAStore<C, &'a XHandle<'x, C>, &'a mut XHandle<'x, C>>,
             Manager<'x> = XManager<'x, SoA<C>, Exclusive<REUSE, V>>,
             Arena<'x, 'x> = XArena<'x, SoA<C>, Exclusive<REUSE, V>>,
         >,
 {
-    pub fn query<Q: Query>(&self) -> AResult<XQuery<'id, '_, C, Q>> {
-        Ok(manager!(ref self).query()?)
+    pub fn view(&self) -> C::Ref<'_, &'_ XHandle<'id, C>> {
+        manager!(ref self).view()
+    }
+    #[expect(clippy::mut_from_ref, reason = "mutability is controlled by the handle")]
+    pub fn view_mut(&self) -> C::Mut<'_, &'_ mut XHandle<'id, C>> {
+        manager!(mut self).view_mut()
     }
     pub fn insert_within_capacity(&self, data: C) -> Result<XHandle<'id, C>, C> {
         let _guard = self.0.alloc_lock.lock();
@@ -169,8 +173,8 @@ where
 impl<'id, C, V> Arena<'id, 'id, SoA<C>, Exclusive<true, V>>
 where
     C: Columns,
-    GlobalConfig<SoA<C>, Exclusive<true, V>>: for<'x> Config<
-            Store: ReusableSoAStore<C>,
+    GlobalConfig<SoA<C>, Exclusive<true, V>>: for<'a, 'x> Config<
+            Store: ReusableSoAStore<C, &'a XHandle<'x, C>, &'a mut XHandle<'x, C>>,
             Manager<'x> = XManager<'x, SoA<C>, Exclusive<true, V>>,
             Arena<'x, 'x> = XArena<'x, SoA<C>, Exclusive<true, V>>,
         >,
