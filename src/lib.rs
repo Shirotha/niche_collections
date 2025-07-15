@@ -1,4 +1,5 @@
 pub mod alloc;
+pub mod tree;
 
 pub(crate) mod internal {
     pub trait Sealed {}

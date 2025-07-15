@@ -1,19 +1,11 @@
 use std::{
-    any::TypeId,
     borrow::{Borrow, BorrowMut},
-    hash::{Hash, Hasher},
     marker::PhantomData,
 };
 
 use derive_macros::Columns;
 
-use crate::{
-    alloc::{
-        prelude::*,
-        store::{Columns, TypeHash},
-    },
-    internal::Sealed,
-};
+use crate::{alloc::prelude::*, internal::Sealed};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Color {
@@ -112,7 +104,7 @@ where
     }
 }
 
-impl<T: TypeHash, O: TypeHash> Value for Singular<T, O>
+impl<T, O> Value for Singular<T, O>
 where
     O: OrderKind,
 {
@@ -127,8 +119,8 @@ where
 pub(super) struct Node<'id, K, V>
 where
     // NOTE: using AsRef would be prefered here, but without it being reflective it can cause problems
-    K: Ord + TypeHash,
-    V: Value + TypeHash,
+    K: Ord,
+    V: Value,
 {
     key:      K,
     // TODO: even if K uses niche optimization, Node cannot optimize color size
@@ -142,21 +134,10 @@ where
     order:    <V::Order as OrderKind>::Data<Ref<'id, K, V>>,
 }
 pub(super) type Ref<'id, K, V> = VHandle<'id, Node<'id, K, V>>;
-unsafe impl<K, V> TypeHash for Ref<'_, K, V>
-where
-    K: Ord + TypeHash,
-    V: Value + TypeHash,
-{
-    fn type_hash(state: &mut impl Hasher) {
-        K::type_hash(state);
-        V::type_hash(state);
-        state.write_u64(0xc0ffee);
-    }
-}
 impl<K, V> Node<'_, K, V>
 where
-    K: Ord + TypeHash,
-    V: Value + TypeHash,
+    K: Ord,
+    V: Value,
 {
     pub fn new(key: K, value: V::Singular, color: Color) -> Self {
         Self {
@@ -171,6 +152,11 @@ where
     }
 }
 
-fn test() {
-    let node = Node::<_, Singular<_>>::new(nonmax::NonMaxU16::new(1).unwrap(), 2, Color::Black);
+fn test<'id, 'man, K: Ord, V: Value>(
+    arena: &Arena<'id, 'man, SoA<Node<'id, K, V>>, Versioned<true>>,
+    handle: Ref<'id, K, V>,
+) -> Option<Color> {
+    let lock = arena.read();
+    let view = lock.view();
+    view.color(handle).ok().copied()
 }
