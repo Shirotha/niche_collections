@@ -20,46 +20,9 @@ impl<T: ?Sized> Clone for VHandle<'_, T> {
     }
 }
 impl<T: ?Sized> Copy for VHandle<'_, T> {}
-pub struct VQuery<'id, 'a, C, Q: Query<Cache: 'a>> {
-    result:   QueryResult<'a, (&'a Version, Q)>,
-    _manager: Id<'id>,
-    _marker:  PhantomData<fn() -> C>,
-}
-impl<'id, C, Q: Query> VQuery<'id, '_, C, Q> {
-    pub fn get(&self, handle: VHandle<'id, C>) -> MResult<Q::Output<'_>> {
-        let (v, result) = self.result.get(handle.index);
-        if *v != handle.version {
-            return Err(ManagerError::BadHandle("version mismatch"));
-        }
-        Ok(result)
-    }
-    fn version(&self, handle: VHandle<'id, C>) -> &Version {
-        self.result.get(handle.index).0
-    }
-}
-pub struct VQueryMut<'id, 'a, C, Q: Query<Cache: 'a>> {
-    result:   QueryResult<'a, (&'a mut Version, Q)>,
-    _manager: Id<'id>,
-    _marker:  PhantomData<fn() -> C>,
-}
-impl<'id, C, Q: Query> VQueryMut<'id, '_, C, Q> {
-    pub fn get(&self, handle: VHandle<'id, C>) -> MResult<Q::Output<'_>> {
-        assert!(Q::READONLY);
-        let (v, result) = self.result.get(handle.index);
-        if *v != handle.version {
-            return Err(ManagerError::BadHandle("version mismatch"));
-        }
-        Ok(result)
-    }
-    pub fn get_mut(&mut self, handle: VHandle<'id, C>) -> MResult<Q::Output<'_>> {
-        let (v, result) = self.result.get(handle.index);
-        if *v != handle.version {
-            return Err(ManagerError::BadHandle("version mismatch"));
-        }
-        Ok(result)
-    }
-    fn version_mut(&mut self, handle: VHandle<'id, C>) -> &mut Version {
-        self.result.get(handle.index).0
+impl<T: ?Sized> IntoIndex for VHandle<'_, T> {
+    fn into_index(self) -> Index {
+        self.index
     }
 }
 
@@ -182,24 +145,15 @@ impl<'id, C, const REUSE: bool, H, V> Manager<'id, SoA<C>, Versioned<REUSE, H, V
 where
     C: Columns,
     GlobalConfig<SoA<C>, Versioned<REUSE, H, V>>: for<'x> Config<
-            Store: SoAStore<Prefix<Version, C>>,
+            Store: SoAStore<Prefix<Version, C>, VHandle<'id, C>>,
             Manager<'x> = VManager<'x, SoA<C>, Versioned<REUSE, H, V>>,
         >,
 {
-    pub fn query<Q: Query>(&self) -> MResult<VQuery<'id, '_, C, Q>> {
-        Ok(VQuery {
-            result:   self.0.store.get::<(&Version, Q)>()?,
-            _manager: self.0.id,
-            _marker:  PhantomData,
-        })
+    pub fn view(&self) -> C::Ref<'_, VHandle<'id, C>> {
+        self.0.store.view().part1()
     }
-    // FIXME: using NthMut<0, Version> in Q leeks the internal &mut Version (to make Version private it can't appear in public interfaces)
-    pub fn query_mut<Q: Query>(&mut self) -> MResult<VQueryMut<'id, '_, C, Q>> {
-        Ok(VQueryMut {
-            result:   self.0.store.get_mut::<(&mut Version, Q)>()?,
-            _manager: self.0.id,
-            _marker:  PhantomData,
-        })
+    pub fn view_mut(&mut self) -> C::Mut<'_, VHandle<'id, C>> {
+        self.0.store.view_mut().into_part1_mut()
     }
     pub fn insert_within_capacity(&mut self, data: C) -> Result<VHandle<'id, C>, C> {
         if self.0.dirty {
@@ -218,9 +172,7 @@ where
             })
     }
     pub(crate) fn bump_version(&mut self, mut handle: VHandle<'id, C>) -> MResult<VHandle<'id, C>> {
-        // TODO: this needs to query for every call, can this query be cached?
-        let mut query = self.query_mut::<()>()?;
-        let v = query.version_mut(handle);
+        let v = self.0.store.view_mut().into_part0_mut().into_col0_mut(handle)?;
         if *v != handle.version {
             return Err(ManagerError::BadHandle("version mismatch"));
         }
@@ -233,19 +185,16 @@ impl<'id, C, H, V> Manager<'id, SoA<C>, Versioned<true, H, V>>
 where
     C: Columns,
     GlobalConfig<SoA<C>, Versioned<true, H, V>>: for<'x> Config<
-            Store: ReusableSoAStore<Prefix<Version, C>>,
+            Store: ReusableSoAStore<Prefix<Version, C>, VHandle<'id, C>>,
             Manager<'x> = VManager<'x, SoA<C>, Versioned<true, H, V>>,
         >,
 {
     pub fn remove(&mut self, handle: VHandle<'id, C>) -> MResult<C> {
-        // TODO: this needs to query for every call, can this query be cached?
-        let query = self.query::<()>()?;
-        if *query.version(handle) != handle.version {
+        let v = self.0.store.view().part0().col0(handle)?;
+        if *v != handle.version {
             return Err(ManagerError::BadHandle("version mismatch"));
         }
-        let removed = self.0.store.remove(handle.index)?;
-        self.0.dirty = true;
-        Ok(removed.0.1)
+        Ok(self.0.store.remove(handle.index)?.into_rest())
     }
 }
 impl<'id, U, const REUSE: bool, H, V> Manager<'id, Slices<U>, Versioned<REUSE, H, V>>

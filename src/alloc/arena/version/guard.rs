@@ -1,3 +1,5 @@
+use std::mem::transmute;
+
 use parking_lot::{RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
 
 use super::*;
@@ -70,14 +72,14 @@ macro_rules! impl_read {
             C: Columns,
             H: Header,
             GlobalConfig<SoA<C>, Versioned<REUSE, H, V>>: for<'x> Config<
-                    Store: SoAStore<Prefix<Version, C>>,
+                    Store: SoAStore<Prefix<Version, C>, VHandle<'x, C>>,
                     Manager<'x> = VManager<'x, SoA<C>, Versioned<REUSE, H, V>>,
                 >,
         {
-            pub fn query<Q: Query>(&self) -> AResult<VQuery<'id, '_, C, Q>> {
-                assert!(Q::READONLY);
-                let query = manager!(ref self).query()?;
-                Ok(map_query!(ref query<'_, C, Q> 'man -> 'id))
+            pub fn view(&self) -> C::Ref<'_, VHandle<'id, C>> {
+                let view = manager!(ref self).view();
+                // SAFETY: self has the proper locks here
+                unsafe { transmute::<C::Ref<'_, VHandle<'man, C>>, C::Ref<'_, VHandle<'id, C>>>(view) }
             }
         }
         impl<'id, 'man, U, const REUSE: bool, H, V> $type<'_, 'id, 'man, Slices<U>, Versioned<REUSE, H, V>, H>
@@ -167,13 +169,14 @@ macro_rules! impl_write {
             C: Columns,
             H: Header,
             GlobalConfig<SoA<C>, Versioned<REUSE, H, V>>: for<'x> Config<
-                    Store: SoAStore<Prefix<Version, C>>,
+                    Store: SoAStore<Prefix<Version, C>, VHandle<'x, C>>,
                     Manager<'x> = VManager<'x, SoA<C>, Versioned<REUSE, H, V>>,
                 >,
         {
-            pub fn query_mut<Q: Query>(&mut self) -> AResult<VQueryMut<'id, '_, C, Q>> {
-                let query = manager!(mut self).query_mut()?;
-                Ok(map_query!(mut query<'_, C, Q> 'man -> 'id))
+            pub fn view_mut(&mut self) -> C::Mut<'_, VHandle<'id, C>> {
+                let view = manager!(mut self).view_mut();
+                // SAFETY: self has the proper locks here
+                unsafe { transmute::<C::Mut<'_, VHandle<'man, C>>, C::Mut<'_, VHandle<'id, C>>>(view) }
             }
             pub fn move_to<'to, M>(
                 &mut self,
@@ -340,7 +343,7 @@ where
     C: Columns,
     H: Header,
     GlobalConfig<SoA<C>, Versioned<REUSE, H, V>>: for<'x> Config<
-            Store: SoAStore<Prefix<Version, C>>,
+            Store: SoAStore<Prefix<Version, C>, VHandle<'x, C>>,
             Manager<'x> = VManager<'x, SoA<C>, Versioned<REUSE, H, V>>,
         >,
 {
@@ -368,7 +371,7 @@ where
     C: Columns,
     H: Header,
     GlobalConfig<SoA<C>, Versioned<true, H, V>>: for<'x> Config<
-            Store: ReusableSoAStore<Prefix<Version, C>>,
+            Store: ReusableSoAStore<Prefix<Version, C>, VHandle<'x, C>>,
             Manager<'x> = VManager<'x, SoA<C>, Versioned<true, H, V>>,
         >,
 {
