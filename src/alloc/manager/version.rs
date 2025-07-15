@@ -150,7 +150,7 @@ where
         >,
 {
     pub fn view(&self) -> C::Ref<'_, VHandle<'id, C>> {
-        self.0.store.view().into_part1()
+        self.0.store.view().part1()
     }
     pub fn view_mut(&mut self) -> C::Mut<'_, VHandle<'id, C>> {
         self.0.store.view_mut().into_part1_mut()
@@ -190,7 +190,7 @@ where
         >,
 {
     pub fn remove(&mut self, handle: VHandle<'id, C>) -> MResult<C> {
-        let v = self.0.store.view_mut().into_part0_mut().into_col0_mut(handle)?;
+        let v = self.0.store.view().part0().col0(handle)?;
         if *v != handle.version {
             return Err(ManagerError::BadHandle("version mismatch"));
         }

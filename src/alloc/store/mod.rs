@@ -256,16 +256,7 @@ macro_rules! impl_columns {
         where
             I: IntoIndex,
         {
-            pub fn col0(&self, index: I) -> SResult<&$T0> {
-                let index = index.into_index();
-                // SAFETY: self.1 is a valid pointer ot an occupation table
-                unsafe { validate_row_index(self.1, index)? };
-                Ok(unsafe {
-                    self.0[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
-                        .cast::<$T0>().as_ref()
-                })
-            }
-            pub fn into_col0(self, index: I) -> SResult<&'a $T0> {
+            pub fn col0(&self, index: I) -> SResult<&'a $T0> {
                 let index = index.into_index();
                 // SAFETY: self.1 is a valid pointer ot an occupation table
                 unsafe { validate_row_index(self.1, index)? };
@@ -275,15 +266,7 @@ macro_rules! impl_columns {
                 })
             }
             $(
-                pub fn [<col $i>](&self, index: I) -> SResult<&$T> {
-                    let index = index.into_index();
-                    // SAFETY: self.1 is a valid pointer ot an occupation table
-                    unsafe { validate_row_index(self.1, index)? };
-                    Ok(unsafe {
-                        self.0[$i].cast::<$T>().add(index.get() as usize).as_ref()
-                    })
-                }
-                pub fn [<into_col $i>](self, index: I) -> SResult<&'a $T> {
+                pub fn [<col $i>](&self, index: I) -> SResult<&'a $T> {
                     let index = index.into_index();
                     // SAFETY: self.1 is a valid pointer ot an occupation table
                     unsafe { validate_row_index(self.1, index)? };
@@ -292,6 +275,16 @@ macro_rules! impl_columns {
                     })
                 }
             )*
+            pub fn cols(&self, index: I) -> SResult<(&'a $T0, $(&'a $T,)*)> {
+                let index = index.into_index();
+                // SAFETY: self.1 is a valid pointer ot an occupation table
+                unsafe { validate_row_index(self.1, index)? };
+                Ok(unsafe {(
+                    self.0[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
+                        .cast::<$T0>().as_ref(),
+                    $(self.0[$i].cast::<$T>().add(index.get() as usize).as_ref(),)*
+                )})
+            }
         }
         impl<'a, $T0, $($T,)* I> TupleMut<'a, ($T0, $($T,)*), I>
         where
@@ -367,6 +360,50 @@ macro_rules! impl_columns {
                     })
                 }
             )*
+            pub fn cols(&self, index: I) -> Result<(&'_ $T0, $(&'_ $T,)*), StoreError> {
+                let index = index.into_index();
+                // SAFETY: self.1 is a valid pointer ot an occupation table
+                unsafe { validate_row_index(self.1, index)? };
+                Ok(unsafe {(
+                    self.0[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
+                        .cast::<$T0>().as_ref(),
+                    $(self.0[$i].cast::<$T>().add(index.get() as usize).as_ref(),)*
+                )})
+            }
+            pub fn cols_mut(&mut self, index: I) -> Result<(&'_ mut $T0, $(&'_ mut $T,)*), StoreError> {
+                let index = index.into_index();
+                // SAFETY: self.1 is a valid pointer ot an occupation table
+                unsafe { validate_row_index(self.1, index)? };
+                Ok(unsafe {(
+                    self.0[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
+                        .cast::<$T0>().as_mut(),
+                    $(self.0[$i].cast::<$T>().add(index.get() as usize).as_mut(),)*
+                )})
+            }
+            pub fn into_cols(self, index: I) -> Result<(&'a $T0, $(&'a $T,)*), (Self, StoreError)> {
+                let index = index.into_index();
+                // SAFETY: self.1 is a valid pointer ot an occupation table
+                if let Err(err) = unsafe { validate_row_index(self.1, index) } {
+                    return Err((self, err));
+                }
+                Ok(unsafe {(
+                    self.0[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
+                        .cast::<$T0>().as_ref(),
+                    $(self.0[$i].cast::<$T>().add(index.get() as usize).as_ref(),)*
+                )})
+            }
+            pub fn into_cols_mut(self, index: I) -> Result<(&'a mut $T0, $(&'a mut $T,)*), (Self, StoreError)> {
+                let index = index.into_index();
+                // SAFETY: self.1 is a valid pointer ot an occupation table
+                if let Err(err) = unsafe { validate_row_index(self.1, index) } {
+                    return Err((self, err));
+                }
+                Ok(unsafe {(
+                    self.0[0].cast::<FreelistEntry<$T0>>().add(index.get() as usize)
+                        .cast::<$T0>().as_mut(),
+                    $(self.0[$i].cast::<$T>().add(index.get() as usize).as_mut(),)*
+                )})
+            }
         }
         unsafe impl<$T0, $($T),*> Columns for ($T0, $($T,)*) {
             const COUNT: usize = 1 $(+{$i;1})*;
@@ -479,20 +516,17 @@ macro_rules! impl_join {
                 }
                 result
             }
-            pub fn part0(&self) -> $T0::Ref<'_, I> {
-                $T0::make_ref(&self.0[0..$T0::COUNT], self.1)
-            }
-            pub fn into_part0(self) -> $T0::Ref<'a, I> {
+            pub fn part0(&self) -> $T0::Ref<'a, I> {
                 $T0::make_ref(&self.0[0..$T0::COUNT], self.1)
             }
             $(
-                pub fn [<part $i>](&self) -> $T::Ref<'_, I> {
-                    $T::make_ref(&self.0[Self::offset($i)..Self::offset($i + 1)], self.1)
-                }
-                pub fn [<into_part $i>](self) -> $T::Ref<'a, I> {
+                pub fn [<part $i>](&self) -> $T::Ref<'a, I> {
                     $T::make_ref(&self.0[Self::offset($i)..Self::offset($i + 1)], self.1)
                 }
             )*
+            pub fn parts(&self) -> ($T0::Ref<'a, I>, $($T::Ref<'a, I>,)*) {
+                (self.part0(), $(self.[<part $i>](),)*)
+            }
         }
         impl<'a, $T0: Columns, $($T: Columns,)* I> JoinMut<'a, ($T0, $($T,)*), I>
         where
@@ -536,6 +570,30 @@ macro_rules! impl_join {
                     $T::make_mut(&self.0[Self::offset($i)..Self::offset($i + 1)], self.1)
                 }
             )*
+            pub fn parts(&self) -> ($T0::Ref<'_, I>, $($T::Ref<'_, I>,)*) {
+                (
+                    $T0::make_ref(&self.0[0..$T0::COUNT], self.1),
+                    $($T::make_ref(&self.0[Self::offset($i)..Self::offset($i + 1)], self.1),)*
+                )
+            }
+            pub fn parts_mut(&mut self) -> ($T0::Mut<'_, I>, $($T::Mut<'_, I>,)*) {
+                (
+                    $T0::make_mut(&self.0[0..$T0::COUNT], self.1),
+                    $($T::make_mut(&self.0[Self::offset($i)..Self::offset($i + 1)], self.1),)*
+                )
+            }
+            pub fn into_parts(self) -> ($T0::Ref<'a, I>, $($T::Ref<'a, I>,)*) {
+                (
+                    $T0::make_ref(&self.0[0..$T0::COUNT], self.1),
+                    $($T::make_ref(&self.0[Self::offset($i)..Self::offset($i + 1)], self.1),)*
+                )
+            }
+            pub fn into_parts_mut(self) -> ($T0::Mut<'a, I>, $($T::Mut<'a, I>,)*) {
+                (
+                    $T0::make_mut(&self.0[0..$T0::COUNT], self.1),
+                    $($T::make_mut(&self.0[Self::offset($i)..Self::offset($i + 1)], self.1),)*
+                )
+            }
         }
         unsafe impl<$T0: Columns, $($T: Columns),*> Columns for Join<($T0, $($T,)*)>
         {

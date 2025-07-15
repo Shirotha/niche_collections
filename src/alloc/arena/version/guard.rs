@@ -1,3 +1,5 @@
+use std::mem::transmute;
+
 use parking_lot::{RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
 
 use super::*;
@@ -74,6 +76,11 @@ macro_rules! impl_read {
                     Manager<'x> = VManager<'x, SoA<C>, Versioned<REUSE, H, V>>,
                 >,
         {
+            pub fn view(&self) -> C::Ref<'_, VHandle<'id, C>> {
+                let view = manager!(ref self).view();
+                // SAFETY: self has the proper locks here
+                unsafe { transmute::<C::Ref<'_, VHandle<'man, C>>, C::Ref<'_, VHandle<'id, C>>>(view) }
+            }
         }
         impl<'id, 'man, U, const REUSE: bool, H, V> $type<'_, 'id, 'man, Slices<U>, Versioned<REUSE, H, V>, H>
         where
@@ -166,6 +173,11 @@ macro_rules! impl_write {
                     Manager<'x> = VManager<'x, SoA<C>, Versioned<REUSE, H, V>>,
                 >,
         {
+            pub fn view_mut(&mut self) -> C::Mut<'_, VHandle<'id, C>> {
+                let view = manager!(mut self).view_mut();
+                // SAFETY: self has the proper locks here
+                unsafe { transmute::<C::Mut<'_, VHandle<'man, C>>, C::Mut<'_, VHandle<'id, C>>>(view) }
+            }
             pub fn move_to<'to, M>(
                 &mut self,
                 _to: &mut Arena<'to, 'man, SoA<C>, Versioned<REUSE, H, V>>,
