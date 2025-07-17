@@ -665,3 +665,80 @@ macro_rules! impl_join {
     }};
 }
 all_tuples_enumerated!(impl_join, 2, 16, T);
+
+#[cfg(target_has_atomic = "ptr")]
+pub mod atomic {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    pub const fn items_per_chunk<T: AsBits>() -> usize {
+        size_of::<usize>() / T::SIZE
+    }
+    pub const fn index_to_chunk_offset<T: AsBits>(index: Index) -> (usize, usize) {
+        let index = index.get() as usize;
+        let size = items_per_chunk::<T>();
+        (index / size, index % size)
+    }
+    pub trait AsBits: Copy {
+        const SIZE: usize;
+
+        fn from_bits(bits: usize) -> Self;
+        fn into_bits(self) -> usize;
+    }
+    pub struct BitsRef<'a, T> {
+        chunk:   &'a AtomicUsize,
+        offset:  usize,
+        _marker: PhantomData<&'a T>,
+    }
+    impl<T: AsBits> BitsRef<'_, T> {
+        const MASK: usize = (1 << T::SIZE) - 1;
+
+        /// # Safety
+        /// `column` has to be a valid pointer to a slice and `index` has to be inbounds.
+        pub unsafe fn from_column_index(column: NonNull<u8>, index: Index) -> Self {
+            let (chunk, offset) = index_to_chunk_offset::<T>(index);
+            Self {
+                // SAFETY: guarantied by caller
+                chunk: unsafe { column.cast::<AtomicUsize>().add(chunk).as_ref() },
+                offset,
+                _marker: PhantomData,
+            }
+        }
+        pub fn load(&self) -> T {
+            let bits = (self.chunk.load(Ordering::Relaxed) >> self.offset) & Self::MASK;
+            T::from_bits(bits)
+        }
+    }
+    pub struct BitsMut<'a, T> {
+        chunk:   &'a mut AtomicUsize,
+        offset:  usize,
+        _marker: PhantomData<&'a T>,
+    }
+    impl<T: AsBits> BitsMut<'_, T> {
+        const MASK: usize = (1 << T::SIZE) - 1;
+
+        /// # Safety
+        /// `column` has to be a valid pointer to a slice and `index` has to be inbounds.
+        pub unsafe fn from_column_index(column: NonNull<u8>, index: Index) -> Self {
+            let (chunk, offset) = index_to_chunk_offset::<T>(index);
+            Self {
+                // SAFETY: guarantied by caller
+                chunk: unsafe { column.cast::<AtomicUsize>().add(chunk).as_mut() },
+                offset,
+                _marker: PhantomData,
+            }
+        }
+        pub fn load(&self) -> T {
+            let bits = (self.chunk.load(Ordering::Relaxed) >> self.offset) & Self::MASK;
+            T::from_bits(bits)
+        }
+        pub fn store(&mut self, value: T) {
+            let bits = (value.into_bits() & Self::MASK) << self.offset;
+            let mask = Self::MASK << self.offset;
+            self.chunk
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |b| Some(b & mask | bits))
+                .expect("block will never return None");
+        }
+    }
+}

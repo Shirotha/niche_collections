@@ -1,6 +1,7 @@
 use std::{
     borrow::{Borrow, BorrowMut},
     marker::PhantomData,
+    mem::transmute,
 };
 
 use derive_macros::Columns;
@@ -11,6 +12,19 @@ use crate::{alloc::prelude::*, internal::Sealed};
 pub(super) enum Color {
     Red   = 0,
     Black = 1,
+}
+#[cfg(target_has_atomic = "ptr")]
+impl AsBits for Color {
+    const SIZE: usize = 1;
+
+    fn from_bits(bits: usize) -> Self {
+        // SAFETY: bits were created using into_bits and are always valid
+        unsafe { transmute(bits as u8) }
+    }
+    fn into_bits(self) -> usize {
+        // SAFETY: transmuting from enum to backing type is always safe
+        unsafe { transmute::<Self, u8>(self) as usize }
+    }
 }
 
 pub trait OrderKind: Sealed {
@@ -116,6 +130,7 @@ where
 }
 
 #[derive(Columns)]
+#[internal]
 pub(super) struct Node<'id, K, V>
 where
     // NOTE: using AsRef would be prefered here, but without it being reflective it can cause problems
@@ -123,13 +138,12 @@ where
     V: Value,
 {
     key:      K,
-    // TODO: even if K uses niche optimization, Node cannot optimize color size
-    // TODO: storing a single bit here is not optimal
-    // NOTE: using a size_of::<K>() <= 16 (31?) works
+    #[cfg_attr(target_has_atomic = "ptr", as_bits)]
     color:    Color,
     singular: V::Singular,
     cumulant: V::Cumulant,
     parent:   Option<Ref<'id, K, V>>,
+    #[freelist_entry]
     children: [Option<Ref<'id, K, V>>; 2],
     order:    <V::Order as OrderKind>::Data<Ref<'id, K, V>>,
 }
@@ -158,5 +172,5 @@ fn test<'id, 'man, K: Ord, V: Value>(
 ) -> Option<Color> {
     let lock = arena.read();
     let view = lock.view();
-    view.color(handle).ok().copied()
+    view.color(handle).ok().map(|c| c.load())
 }

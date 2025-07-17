@@ -30,6 +30,10 @@ impl Version {
 
 #[allow(type_alias_bounds)]
 pub mod prelude {
+    pub use derive_macros::Columns;
+
+    #[cfg(target_has_atomic = "ptr")]
+    pub use super::store::atomic::AsBits;
     pub use super::{
         arena::{Arena, Guarded, Header, Headless, header},
         manager::{Exclusive, Mixed, Slices, SoA, Typed, VHandle, Versioned, XHandle},
